@@ -1,0 +1,128 @@
+"""
+Toolchain to execute Vitest tests
+"""
+type Vitest {
+  """
+  The source directory for the project.
+  """
+  pub source: Directory! @defaultPath(path: "/") @ignorePatterns(patterns: ["**/node_modules", "/dist", "/build"])
+
+  """
+  The base image to use.
+  """
+  pub baseImageAddress: String! = "node:25-alpine"
+
+  """
+  The package manager to use.
+  """
+  pub packageManager: String! = "npm"
+
+  """
+  Execute the tests
+  """
+  pub test(
+  """
+  List of files to test
+  """
+  files: [String!]! = [],
+  """
+  Run build before test
+  """
+  build: Boolean! = false,
+  """
+  Set to true if @dagger.io/vitest is setup inside
+  vitest.config.ts so --reporter=@dagger.io/vitest is no longer
+  added
+  """
+  disableReporterFlag: Boolean! = false
+  """
+  Flags to pass to vitest
+  """
+  flags: [String!]! = []
+  ): Void @check {
+    let runtime = base
+
+    # optionally build first
+    if (build) {
+      runtime = runtime.withExec([packageManager, "run", "build"])
+    }
+
+    # install the local build of the otel library
+    let installLibrary = [packageManager, "install", "-D", "/vitest"]
+    # yarn uses add instead of install
+    if (packageManager == "yarn") {
+      installLibrary = [packageManager, "add", "--dev", "/vitest"]
+    }
+
+    # pnpm needs -w
+    if (packageManager == "pnpm") {
+      installLibrary = [packageManager, "install", "-w", "-D", "/vitest"]
+    }
+
+    # Install vitest library
+    runtime = runtime.
+      withMountedDirectory("/vitest", buildLibrary).
+      withExec(installLibrary)
+
+    if (!disableReporterFlag) {
+      flags = flags + ["--reporter=default", "--reporter=@dagger.io/vitest"]
+    }
+
+    # mount and install the otel library and then execute the tests
+    runtime.
+      withExec(["npx", "vitest"] + flags + files).
+      sync
+
+    null
+  }
+
+  """
+  List the tests
+  """
+  pub list(): String {
+    let cmd = ["npx", "vitest", "list"]
+
+    base.
+      withExec(cmd).
+      stdout
+  }
+
+  """
+  Runtime container for executing tests
+  """
+  let base: Container! {
+    # set cache variables for all supported package managers
+    let base = container.from(baseImageAddress).
+      withMountedCache("/root/.packages", cacheVolume("node-toolchain-packages")).
+      withEnvVariable("npm_config_cache", "/root/.packages").
+      withEnvVariable("YARN_CACHE_FOLDER", "/root/.packages").
+      withEnvVariable("PNPM_HOME", "/root/.packages").
+      withEnvVariable("BUN_INSTALL_CACHE_DIR", "/root/.packages")
+
+    if (packageManager == "pnpm" and baseImageAddress.contains("node:")) {
+      base = base.withExec(["corepack", "enable"])
+    }
+
+    base.
+      withDirectory("/src", source).
+      withWorkdir("/src").
+      withEnvVariable("CI", "true").
+      withExec([packageManager, "install"])
+  }
+
+  """
+  Build the otel library
+  """
+  let buildLibrary: Directory! {
+    let module = currentModule.source
+
+    container.from("oven/bun:1.3.0-alpine@sha256:37e6b1cbe053939bccf6ae4507977ed957eaa6e7f275670b72ad6348e0d2c11f").
+      withMountedCache("/root/.bun/install/cache", cacheVolume("library-node-modules")).
+      withEnvVariable("BUN_INSTALL_CACHE_DIR", "/root/.bun/install/cache").
+      withDirectory("/src", module).
+      withWorkdir("/src").
+      withExec(["bun", "install"]).
+      withExec(["bun", "run", "build"]).
+      directory("/src")
+  }
+}

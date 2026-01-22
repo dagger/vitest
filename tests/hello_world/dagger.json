@@ -1,0 +1,16 @@
+{
+  "name": "hello_world",
+  "engineVersion": "v0.19.10",
+  "toolchains": [
+    {
+      "name": "vitest",
+      "source": "../..",
+      "customizations": [
+        {
+          "argument": "source",
+          "defaultPath": "/tests/hello_world"
+        }
+      ]
+    }
+  ]
+}
