@@ -4,11 +4,11 @@
   "toolchains": [
     {
       "name": "vitest",
-      "source": "../..",
+      "source": "../../",
       "customizations": [
         {
           "argument": "source",
-          "defaultPath": "/tests/hello_world"
+          "defaultPath": "/tests/hello_world_toolchain_local"
         }
       ]
     }

@@ -3,15 +3,12 @@
   "version": "1.0.0",
   "description": "",
   "main": "index.js",
-  "scripts": {
-    "test": "NODE_OPTIONS=\"$NODE_OPTIONS --import @dagger.io/vitest/register \" vitest run"
-  },
+  "scripts": {},
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "module",
   "devDependencies": {
-    "@dagger.io/vitest": "^0.0.2",
     "typescript": "^5.9.3",
     "vitest": "^4.0.17"
   },

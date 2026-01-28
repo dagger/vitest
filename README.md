@@ -9,31 +9,24 @@ Vitest reporter with OpenTelemetry support for auto-instrumentation with Dagger.
 ```bash
 dagger toolchain install github.com/dagger/vitest
 
+# Execute vitest through the toolchain (no additional setup needed)
 dagger check
 ```
 
+You can customize vitest using [`customization`](https://docs.dagger.io/core-concepts/toolchains/#customizing-toolchains)
+
 ### As a library
+
+If you prefer to directly install the vitest library, run:
 
 ```bash
 npm install --save-dev @dagger.io/vitest
 ```
 
-## Usage
+Then set the import in your `NODE_OPTIONS` when executing your tests:
 
-You can either set the flag `--reporter=@dagger.io/vitest` or update your vitest config file to use the reporter:
-
-```typescript
-import { defineConfig } from "vitest/config";
-import DaggerReporter from "@dagger.io/vitest";
-
-export default defineConfig({
-  test: {
-    reporters: [
-      "default", // Keep the default reporter for console output
-      new OtelReporter(), // add `as any` if you got a typing issue
-    ],
-  },
-});
+```shell
+NODE_OPTIONS="$NODE_OPTIONS --import @dagger.io/vitest/register" npx vitest run
 ```
 
 That's it! The reporter will automatically create OpenTelemetry spans for:
@@ -48,6 +41,8 @@ That's it! The reporter will automatically create OpenTelemetry spans for:
 test-file.ts (module span)
   └─ describe block (suite span)
       ├─ test 1 (test span)
+        ├─ SELECT * FROM users (inside test span)
+        └─ Container.withExec(...) (inside test span)
       └─ test 2 (test span)
 ```
 

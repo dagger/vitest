@@ -1,4 +1,4 @@
-import { describe, it, expect, suite, test } from "vitest";
+import { describe, it, expect } from "vitest";
 
 import { trace } from "@opentelemetry/api";
 
@@ -27,8 +27,8 @@ describe("Example Test Suite", () => {
   });
 });
 
-suite("Another Suite", () => {
-  test("passes in different suite", () => {
+describe("Another Suite", () => {
+  it("passes in different suite", () => {
     expect([1, 2, 3]).toHaveLength(3);
   });
 });

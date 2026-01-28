@@ -3,13 +3,13 @@
   "description": "Vitest Test Runner with Open telemetry support for auto-instrumentation with dagger",
   "author": "dagger",
   "license": "Apache-2.0",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "type": "module",
   "exports": {
-    ".": {
-      "types": "./dist/types/index.d.ts",
-      "import": "./dist/esm/index.mjs",
-      "require": "./dist/cjs/index.cjs"
+    "./register": {
+      "types": "./dist/types/register.d.ts",
+      "import": "./dist/esm/register.mjs",
+      "require": "./dist/cjs/register.cjs"
     }
   },
   "scripts": {
@@ -55,6 +55,7 @@
   "homepage": "https://github.com/dagger/vitest",
   "dependencies": {
     "@dagger.io/telemetry": "^0.0.5",
-    "@opentelemetry/sdk-node": "^0.209.0"
+    "@opentelemetry/sdk-node": "^0.209.0",
+    "import-in-the-middle": "^2.0.6"
   }
 }

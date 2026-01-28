@@ -30,12 +30,6 @@ type Vitest {
   """
   build: Boolean! = false,
   """
-  Set to true if @dagger.io/vitest is setup inside
-  vitest.config.ts so --reporter=@dagger.io/vitest is no longer
-  added
-  """
-  disableReporterFlag: Boolean! = false
-  """
   Flags to pass to vitest
   """
   flags: [String!]! = []
@@ -48,7 +42,7 @@ type Vitest {
     }
 
     # install the local build of the otel library
-    let installLibrary = [packageManager, "install", "-D", "/vitest"]
+    let installLibrary = [packageManager, "install", "-D", "/vitest", "--install-links"]
     # yarn uses add instead of install
     if (packageManager == "yarn") {
       installLibrary = [packageManager, "add", "--dev", "/vitest"]
@@ -56,7 +50,7 @@ type Vitest {
 
     # pnpm needs -w
     if (packageManager == "pnpm") {
-      installLibrary = [packageManager, "install", "-w", "-D", "/vitest"]
+      installLibrary = [packageManager, "install", "-w", "-D", "/vitest", "--no-link-workspace-packages"]
     }
 
     # Install vitest library
@@ -64,12 +58,9 @@ type Vitest {
       withMountedDirectory("/vitest", buildLibrary).
       withExec(installLibrary)
 
-    if (!disableReporterFlag) {
-      flags = flags + ["--reporter=default", "--reporter=@dagger.io/vitest"]
-    }
-
     # mount and install the otel library and then execute the tests
     runtime.
+      withEnvVariable("NODE_OPTIONS", "$NODE_OPTIONS --import @dagger.io/vitest/register", expand: true).
       withExec(["npx", "vitest"] + flags + files).
       sync
 
@@ -114,7 +105,7 @@ type Vitest {
   Build the otel library
   """
   let buildLibrary: Directory! {
-    let module = currentModule.source
+    let module = currentModule.source.filter(exclude: ["tests", "vitest.dang", "dagger.json", "biome.json", "dist", "node_modules"])
 
     container.from("oven/bun:1.3.0-alpine@sha256:37e6b1cbe053939bccf6ae4507977ed957eaa6e7f275670b72ad6348e0d2c11f").
       withMountedCache("/root/.bun/install/cache", cacheVolume("library-node-modules")).

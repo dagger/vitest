@@ -4,7 +4,7 @@ import { trace } from "@opentelemetry/api";
 
 const tracer = trace.getTracer("dagger.io/vitest");
 
-describe("Example Test Suite", () => {
+describe("Sub suite", () => {
   it("should pass", () => {
     tracer.startActiveSpan("inside test", (span) => {
       expect(1 + 1).toBe(2);
@@ -20,15 +20,5 @@ describe("Example Test Suite", () => {
     it("nested test passes", () => {
       expect("hello").toBe("hello");
     });
-
-    it("nested test fails", () => {
-      expect(1).toBe(2);
-    });
-  });
-});
-
-suite("Another Suite", () => {
-  test("passes in different suite", () => {
-    expect([1, 2, 3]).toHaveLength(3);
   });
 });

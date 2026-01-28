@@ -9,12 +9,13 @@ const external = (id) => {
   return (
     id.startsWith("@opentelemetry/") ||
     id === "@dagger.io/telemetry" ||
-    id.includes("vitest/")
+    id.includes("vitest/") ||
+    id === "import-in-the-middle"
   );
 };
 
-const indexConfig = {
-  input: "src/index.ts",
+const registerConfig = {
+  input: "src/register.ts",
   plugins: [
     typescript({
       tsconfig: "./tsconfig.json",
@@ -28,16 +29,43 @@ const indexConfig = {
   external,
   output: [
     {
-      file: "dist/cjs/index.cjs",
+      file: "dist/cjs/register.cjs",
       format: "cjs",
       sourcemap: true,
     },
     {
-      file: "dist/esm/index.mjs",
+      file: "dist/esm/register.mjs",
       format: "es",
       sourcemap: true,
     },
   ],
 };
 
-export default [indexConfig];
+const hookConfig = {
+  input: "src/hook.ts",
+  plugins: [
+    typescript({
+      tsconfig: "./tsconfig.json",
+      declaration: false,
+      declarationMap: false,
+    }),
+    json(),
+    resolve({ preferBuiltins: true }),
+    commonjs(),
+  ],
+  external,
+  output: [
+    {
+      file: "dist/cjs/hook.js",
+      format: "cjs",
+      sourcemap: true,
+    },
+    {
+      file: "dist/esm/hook.js",
+      format: "es",
+      sourcemap: true,
+    },
+  ],
+};
+
+export default [registerConfig, hookConfig];
