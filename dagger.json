@@ -1,7 +1,7 @@
 {
   "name": "vitest",
-  "engineVersion": "v0.19.10",
+  "engineVersion": "v0.20.0",
   "sdk": {
-    "source": "github.com/vito/dang/dagger-sdk"
+    "source": "github.com/vito/dang/dagger-sdk@8966295a629141c5b9e905ece9cf0cdafa20520e"
   }
 }
