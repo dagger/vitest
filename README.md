@@ -35,6 +35,12 @@ That's it! The reporter will automatically create OpenTelemetry spans for:
 - **Test suites** (describe blocks)
 - **Individual tests** (it/test blocks)
 
+## Span Attributes
+
+Test spans include `dagger.io/ui.boundary` plus OpenTelemetry test semantic convention attributes: `test.case.name`, `test.case.result.status`, and `test.suite.name`.
+
+Suite spans include `dagger.io/ui.boundary`, `test.suite.name`, and `test.suite.run.status`.
+
 ## Span Hierarchy
 
 ```

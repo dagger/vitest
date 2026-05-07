@@ -5,12 +5,25 @@
 
 import { OtelSDK } from "@dagger.io/telemetry";
 import {
+  type Attributes,
   type Context,
   context,
   type Span,
   SpanStatusCode,
   trace,
 } from "@opentelemetry/api";
+import {
+  ATTR_TEST_CASE_NAME,
+  ATTR_TEST_CASE_RESULT_STATUS,
+  ATTR_TEST_SUITE_NAME,
+  ATTR_TEST_SUITE_RUN_STATUS,
+  TEST_CASE_RESULT_STATUS_VALUE_FAIL,
+  TEST_CASE_RESULT_STATUS_VALUE_PASS,
+  TEST_SUITE_RUN_STATUS_VALUE_FAILURE,
+  TEST_SUITE_RUN_STATUS_VALUE_IN_PROGRESS,
+  TEST_SUITE_RUN_STATUS_VALUE_SKIPPED,
+  TEST_SUITE_RUN_STATUS_VALUE_SUCCESS,
+} from "@opentelemetry/semantic-conventions/incubating";
 import type {
   File,
   FileSpecification,
@@ -24,6 +37,7 @@ import { Hook } from "import-in-the-middle";
 
 const sdk = new OtelSDK();
 const tracer = trace.getTracer("dagger.io/vitest");
+const ATTR_UI_BOUNDARY = "dagger.io/ui.boundary";
 
 type Telemetry = {
   span: Span;
@@ -50,8 +64,7 @@ function __recordSpansInTest(testFn: any, getCurrentTest: any): any {
 
       const wrappedFn = async function (this: any) {
         const currentTest = getCurrentTest();
-        const testCtx =
-          __testsTelemetry.get(currentTest)?.ctx ?? context.active();
+        const testCtx = __testsTelemetry.get(currentTest)?.ctx ?? context.active();
 
         await context.with(testCtx, async () => {
           await fn.apply(this, arguments);
@@ -90,10 +103,10 @@ function __deserializeError(error: TestError): Error {
  * @param fn The function that extends the method.
  * @returns The extended method
  */
-function extendVitestRunnerMethod<
-  K extends keyof VitestRunner,
-  M extends VitestRunner[K],
->(method: M | undefined, fn: M): M {
+function extendVitestRunnerMethod<K extends keyof VitestRunner, M extends VitestRunner[K]>(
+  method: M | undefined,
+  fn: M,
+): M {
   if (method === undefined) {
     return fn;
   }
@@ -107,137 +120,203 @@ function extendVitestRunnerMethod<
   });
 }
 
+function __testSpanAttributes(test: Test): Attributes {
+  return {
+    [ATTR_UI_BOUNDARY]: true,
+    [ATTR_TEST_CASE_NAME]: __testCaseName(test),
+    [ATTR_TEST_SUITE_NAME]: __testSuiteName(test.suite ?? test.file),
+  };
+}
+
+function __testSuiteSpanAttributes(suite: File | Suite): Attributes {
+  return {
+    [ATTR_UI_BOUNDARY]: true,
+    [ATTR_TEST_SUITE_NAME]: __testSuiteName(suite),
+    [ATTR_TEST_SUITE_RUN_STATUS]: TEST_SUITE_RUN_STATUS_VALUE_IN_PROGRESS,
+  };
+}
+
+function __testCaseName(test: Test): string {
+  return `${__testSuiteName(test.suite ?? test.file)}::${test.name}`;
+}
+
+function __testSuiteName(suite: File | Suite): string {
+  const file = (suite as Suite).file;
+  const fileName = file?.name ?? suite.name;
+  const names = __suiteNames(suite);
+
+  return [fileName, ...names].join("::");
+}
+
+function __suiteNames(suite?: File | Suite): string[] {
+  const names: string[] = [];
+  let current = suite as Suite | undefined;
+
+  while (current && (current as any).filepath === undefined) {
+    names.unshift(current.name);
+    current = current.suite;
+  }
+
+  return names;
+}
+
+function __testCaseResultStatus(state?: string): string {
+  if (state === "fail") {
+    return TEST_CASE_RESULT_STATUS_VALUE_FAIL;
+  }
+  if (state === "skip" || state === "todo") {
+    // The semconv package only defines pass/fail well-known values; custom values are allowed.
+    return "skipped";
+  }
+  return TEST_CASE_RESULT_STATUS_VALUE_PASS;
+}
+
+function __testSuiteRunStatus(state?: string): string {
+  if (state === "fail") {
+    return TEST_SUITE_RUN_STATUS_VALUE_FAILURE;
+  }
+  if (state === "skip" || state === "todo") {
+    return TEST_SUITE_RUN_STATUS_VALUE_SKIPPED;
+  }
+  return TEST_SUITE_RUN_STATUS_VALUE_SUCCESS;
+}
+
 function addTelemetryToRunner(runner: VitestRunner): VitestRunner {
   // Happen before a test file run.
   // Create an otel context for that file and start a span.
-  runner.onBeforeRunFiles = extendVitestRunnerMethod(
-    runner.onBeforeRunFiles,
-    ([file]: File[]) => {
-      if (!file) return;
+  runner.onBeforeRunFiles = extendVitestRunnerMethod(runner.onBeforeRunFiles, ([file]: File[]) => {
+    if (!file) return;
 
-      // The name is the filepath related to the root dir.
-      const filename = file.name;
+    // The name is the filepath related to the root dir.
+    const filename = file.name;
 
-      const parentCtx = context.active();
-      const fileSpan = tracer.startSpan(filename, {}, parentCtx);
-      const fileSpanCtx = trace.setSpan(parentCtx, fileSpan);
+    const parentCtx = context.active();
+    const fileSpan = tracer.startSpan(
+      filename,
+      { attributes: __testSuiteSpanAttributes(file) },
+      parentCtx,
+    );
+    const fileSpanCtx = trace.setSpan(parentCtx, fileSpan);
 
-      __filesTelemetry.set(file, { span: fileSpan, ctx: fileSpanCtx });
-    },
-  );
+    __filesTelemetry.set(file, { span: fileSpan, ctx: fileSpanCtx });
+  });
 
   // Happen after a test file ran.
   // Close the file span, eventually set an error if a test failed in that file.
-  runner.onAfterRunFiles = extendVitestRunnerMethod(
-    runner.onAfterRunFiles,
-    ([file]: File[]) => {
-      if (!file) return;
+  runner.onAfterRunFiles = extendVitestRunnerMethod(runner.onAfterRunFiles, ([file]: File[]) => {
+    if (!file) return;
 
-      const fileSpan = __filesTelemetry.get(file)?.span;
-      if (fileSpan === undefined) return;
+    const fileSpan = __filesTelemetry.get(file)?.span;
+    if (fileSpan === undefined) return;
 
-      if (file.result?.state === "fail") {
-        fileSpan.setStatus({ code: SpanStatusCode.ERROR });
-      }
+    fileSpan.setAttribute(ATTR_TEST_SUITE_RUN_STATUS, __testSuiteRunStatus(file.result?.state));
 
-      fileSpan.end();
-    },
-  );
+    if (file.result?.state === "fail") {
+      fileSpan.setStatus({ code: SpanStatusCode.ERROR });
+    } else if (file.result?.state === "pass") {
+      fileSpan.setStatus({ code: SpanStatusCode.OK });
+    }
+
+    fileSpan.end();
+  });
 
   // Happen before a test group start.
   // Look for the suite parent's context, either the file span context
   // or a parent suite.
   // Start a span with that context.
-  runner.onBeforeRunSuite = extendVitestRunnerMethod(
-    runner.onBeforeRunSuite,
-    (suite: Suite) => {
-      if ((suite as any).filepath !== undefined) {
-        return;
-      }
+  runner.onBeforeRunSuite = extendVitestRunnerMethod(runner.onBeforeRunSuite, (suite: Suite) => {
+    if ((suite as any).filepath !== undefined) {
+      return;
+    }
 
-      let parentCtx = __filesTelemetry.get(suite.file)?.ctx;
-      if (suite.suite) {
-        parentCtx = __suitesTelemetry.get(suite.suite)?.ctx;
-      }
+    let parentCtx = __filesTelemetry.get(suite.file)?.ctx;
+    if (suite.suite) {
+      parentCtx = __suitesTelemetry.get(suite.suite)?.ctx;
+    }
 
-      if (!parentCtx) {
-        parentCtx = context.active();
-      }
+    if (!parentCtx) {
+      parentCtx = context.active();
+    }
 
-      const suiteSpan = tracer.startSpan(suite.name, {}, parentCtx);
-      const suiteSpanCtx = trace.setSpan(parentCtx, suiteSpan);
+    const suiteSpan = tracer.startSpan(
+      suite.name,
+      { attributes: __testSuiteSpanAttributes(suite) },
+      parentCtx,
+    );
+    const suiteSpanCtx = trace.setSpan(parentCtx, suiteSpan);
 
-      __suitesTelemetry.set(suite, {
-        span: suiteSpan,
-        ctx: suiteSpanCtx,
-      });
-    },
-  );
+    __suitesTelemetry.set(suite, {
+      span: suiteSpan,
+      ctx: suiteSpanCtx,
+    });
+  });
 
   // Happen a test suite complete.
   // Close the group span, eventually set an error if the suite failed.
-  runner.onAfterRunSuite = extendVitestRunnerMethod(
-    runner.onAfterRunSuite,
-    (suite: Suite) => {
-      const suiteSpan = __suitesTelemetry.get(suite)?.span;
-      if (suiteSpan === undefined) return;
+  runner.onAfterRunSuite = extendVitestRunnerMethod(runner.onAfterRunSuite, (suite: Suite) => {
+    const suiteSpan = __suitesTelemetry.get(suite)?.span;
+    if (suiteSpan === undefined) return;
 
-      if (suite.result?.state === "fail") {
-        suiteSpan.setStatus({
-          code: SpanStatusCode.ERROR,
-        });
-      }
+    suiteSpan.setAttribute(ATTR_TEST_SUITE_RUN_STATUS, __testSuiteRunStatus(suite.result?.state));
 
-      suiteSpan.end();
-    },
-  );
+    if (suite.result?.state === "fail") {
+      suiteSpan.setStatus({
+        code: SpanStatusCode.ERROR,
+      });
+    } else if (suite.result?.state === "pass") {
+      suiteSpan.setStatus({ code: SpanStatusCode.OK });
+    }
+
+    suiteSpan.end();
+  });
 
   // Happn before test run.
   // Start a span with the test's name.
-  runner.onBeforeRunTask = extendVitestRunnerMethod(
-    runner.onBeforeRunTask,
-    (test: Test) => {
-      let parentCtx = __filesTelemetry.get(test.file)?.ctx ?? context.active();
-      if (test.suite) {
-        parentCtx = __suitesTelemetry.get(test.suite)?.ctx ?? parentCtx;
-      }
+  runner.onBeforeRunTask = extendVitestRunnerMethod(runner.onBeforeRunTask, (test: Test) => {
+    let parentCtx = __filesTelemetry.get(test.file)?.ctx ?? context.active();
+    if (test.suite) {
+      parentCtx = __suitesTelemetry.get(test.suite)?.ctx ?? parentCtx;
+    }
 
-      const testSpan = tracer.startSpan(test.name, {}, parentCtx);
-      const testSpanCtx = trace.setSpan(parentCtx, testSpan);
+    const testSpan = tracer.startSpan(
+      test.name,
+      { attributes: __testSpanAttributes(test) },
+      parentCtx,
+    );
+    const testSpanCtx = trace.setSpan(parentCtx, testSpan);
 
-      __testsTelemetry.set(test, { span: testSpan, ctx: testSpanCtx });
-    },
-  );
+    __testsTelemetry.set(test, { span: testSpan, ctx: testSpanCtx });
+  });
 
   // Happen on test completion.
   // Close the span, eventually set an error if the test failed.
-  runner.onAfterRunTask = extendVitestRunnerMethod(
-    runner.onAfterRunTask,
-    (test: Test) => {
-      const testSpan = __testsTelemetry.get(test)?.span;
-      if (!testSpan) return;
+  runner.onAfterRunTask = extendVitestRunnerMethod(runner.onAfterRunTask, (test: Test) => {
+    const testSpan = __testsTelemetry.get(test)?.span;
+    if (!testSpan) return;
 
-      if (test.result?.state === "fail") {
-        const errors = test.result.errors;
-        let errorMessage: string | undefined;
-        if (errors) {
-          for (const error of errors) {
-            testSpan.recordException(__deserializeError(error));
-          }
+    testSpan.setAttribute(ATTR_TEST_CASE_RESULT_STATUS, __testCaseResultStatus(test.result?.state));
 
-          errorMessage =
-            __deserializeError(errors[0])?.message ?? "Test failed";
+    if (test.result?.state === "fail") {
+      const errors = test.result.errors;
+      let errorMessage: string | undefined;
+      if (errors) {
+        for (const error of errors) {
+          testSpan.recordException(__deserializeError(error));
         }
 
-        testSpan.setStatus({
-          code: SpanStatusCode.ERROR,
-          message: errorMessage,
-        });
+        errorMessage = __deserializeError(errors[0])?.message ?? "Test failed";
       }
 
-      testSpan.end();
-    },
-  );
+      testSpan.setStatus({
+        code: SpanStatusCode.ERROR,
+        message: errorMessage,
+      });
+    } else if (test.result?.state === "pass") {
+      testSpan.setStatus({ code: SpanStatusCode.OK });
+    }
+
+    testSpan.end();
+  });
 
   return runner;
 }
@@ -279,10 +358,7 @@ new Hook(["@vitest/runner"], (exported: any, _name: string, _baseDir: any) => {
       sdk.start();
 
       try {
-        return await originalStartTests.apply(this, [
-          specs,
-          addTelemetryToRunner(runner),
-        ]);
+        return await originalStartTests.apply(this, [specs, addTelemetryToRunner(runner)]);
       } finally {
         // Shutdown SDK after all tests complete
         await sdk.shutdown();
