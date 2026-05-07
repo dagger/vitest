@@ -3,15 +3,18 @@
  * This file is imported AFTER the loader is registered.
  */
 
+import { format } from "node:util";
 import { OtelSDK } from "@dagger.io/telemetry";
 import {
   type Attributes,
   type Context,
   context,
+  isSpanContextValid,
   type Span,
   SpanStatusCode,
   trace,
 } from "@opentelemetry/api";
+import { logs, SeverityNumber } from "@opentelemetry/api-logs";
 import {
   ATTR_TEST_CASE_NAME,
   ATTR_TEST_CASE_RESULT_STATUS,
@@ -37,16 +40,26 @@ import { Hook } from "import-in-the-middle";
 
 const sdk = new OtelSDK();
 const tracer = trace.getTracer("dagger.io/vitest");
+const logger = logs.getLogger("dagger.io/vitest");
+
 const ATTR_UI_BOUNDARY = "dagger.io/ui.boundary";
+const STDIO_STREAM_ATTR = "stdio.stream";
+const STDIO_STREAM_STDOUT = 1;
+const STDIO_STREAM_STDERR = 2;
 
 type Telemetry = {
   span: Span;
   ctx: Context;
 };
 
+type ConsoleMethodName = "debug" | "error" | "info" | "log" | "warn";
+type ConsoleStream = "stderr" | "stdout";
+
 const __filesTelemetry = new WeakMap<File, Telemetry>();
 const __suitesTelemetry = new WeakMap<Suite, Telemetry>();
 const __testsTelemetry = new WeakMap<Test, Telemetry>();
+const __PATCHED_CONSOLE_METHOD = Symbol.for("dagger.io/vitest.console.telemetry");
+let __emittingConsoleTelemetry = false;
 
 /**
  * Update the testFn of vitest to execute the function inside
@@ -120,6 +133,63 @@ function extendVitestRunnerMethod<K extends keyof VitestRunner, M extends Vitest
   });
 }
 
+function __patchConsoleTelemetry(): void {
+  __patchConsoleMethod("debug", "stdout");
+  __patchConsoleMethod("info", "stdout");
+  __patchConsoleMethod("log", "stdout");
+  __patchConsoleMethod("warn", "stderr");
+  __patchConsoleMethod("error", "stderr");
+}
+
+function __patchConsoleMethod(method: ConsoleMethodName, stream: ConsoleStream): void {
+  const current = console[method] as ((...args: any[]) => void) & {
+    [__PATCHED_CONSOLE_METHOD]?: boolean;
+  };
+  if (current[__PATCHED_CONSOLE_METHOD]) {
+    return;
+  }
+
+  const original = current.bind(console);
+  const patched = ((...args: any[]) => {
+    __emitConsoleTelemetry(stream, args);
+    return original(...args);
+  }) as (typeof console)[typeof method] & { [__PATCHED_CONSOLE_METHOD]?: boolean };
+
+  patched[__PATCHED_CONSOLE_METHOD] = true;
+  console[method] = patched;
+}
+
+function __emitConsoleTelemetry(stream: ConsoleStream, args: any[]): void {
+  if (__emittingConsoleTelemetry) {
+    return;
+  }
+
+  const activeContext = context.active();
+  const activeSpan = trace.getSpan(activeContext);
+  if (!activeSpan || !isSpanContextValid(activeSpan.spanContext())) {
+    return;
+  }
+
+  __emittingConsoleTelemetry = true;
+  try {
+    logger.emit({
+      timestamp: Date.now(),
+      observedTimestamp: Date.now(),
+      severityNumber: stream === "stderr" ? SeverityNumber.ERROR : SeverityNumber.INFO,
+      severityText: stream === "stderr" ? "ERROR" : "INFO",
+      body: `${format(...args)}\n`,
+      attributes: {
+        [STDIO_STREAM_ATTR]: stream === "stderr" ? STDIO_STREAM_STDERR : STDIO_STREAM_STDOUT,
+      },
+      context: activeContext,
+    });
+  } catch {
+    // Do not let telemetry log emission affect the test run.
+  } finally {
+    __emittingConsoleTelemetry = false;
+  }
+}
+
 function __testSpanAttributes(test: Test): Attributes {
   return {
     [ATTR_UI_BOUNDARY]: true,
@@ -185,6 +255,8 @@ function addTelemetryToRunner(runner: VitestRunner): VitestRunner {
   // Happen before a test file run.
   // Create an otel context for that file and start a span.
   runner.onBeforeRunFiles = extendVitestRunnerMethod(runner.onBeforeRunFiles, ([file]: File[]) => {
+    __patchConsoleTelemetry();
+
     if (!file) return;
 
     // The name is the filepath related to the root dir.
@@ -197,8 +269,9 @@ function addTelemetryToRunner(runner: VitestRunner): VitestRunner {
       parentCtx,
     );
     const fileSpanCtx = trace.setSpan(parentCtx, fileSpan);
+    const telemetry = { span: fileSpan, ctx: fileSpanCtx };
 
-    __filesTelemetry.set(file, { span: fileSpan, ctx: fileSpanCtx });
+    __filesTelemetry.set(file, telemetry);
   });
 
   // Happen after a test file ran.
@@ -245,10 +318,12 @@ function addTelemetryToRunner(runner: VitestRunner): VitestRunner {
     );
     const suiteSpanCtx = trace.setSpan(parentCtx, suiteSpan);
 
-    __suitesTelemetry.set(suite, {
+    const telemetry = {
       span: suiteSpan,
       ctx: suiteSpanCtx,
-    });
+    };
+
+    __suitesTelemetry.set(suite, telemetry);
   });
 
   // Happen a test suite complete.
@@ -284,8 +359,9 @@ function addTelemetryToRunner(runner: VitestRunner): VitestRunner {
       parentCtx,
     );
     const testSpanCtx = trace.setSpan(parentCtx, testSpan);
+    const telemetry = { span: testSpan, ctx: testSpanCtx };
 
-    __testsTelemetry.set(test, { span: testSpan, ctx: testSpanCtx });
+    __testsTelemetry.set(test, telemetry);
   });
 
   // Happen on test completion.
@@ -356,10 +432,14 @@ new Hook(["@vitest/runner"], (exported: any, _name: string, _baseDir: any) => {
       runner: VitestRunner,
     ): Promise<File[]> {
       sdk.start();
+      __patchConsoleTelemetry();
 
       try {
         return await originalStartTests.apply(this, [specs, addTelemetryToRunner(runner)]);
       } finally {
+        // Let Vitest flush console logs scheduled with queueMicrotask before shutting down.
+        await new Promise<void>((resolve) => queueMicrotask(resolve));
+
         // Shutdown SDK after all tests complete
         await sdk.shutdown();
       }
