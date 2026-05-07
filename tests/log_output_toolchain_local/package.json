@@ -1,0 +1,12 @@
+{
+  "name": "vitest-log-output-example",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "NODE_OPTIONS=\"$NODE_OPTIONS --import @dagger.io/vitest/register\" vitest run"
+  },
+  "devDependencies": {
+    "vitest": "^4.0.17"
+  }
+}
