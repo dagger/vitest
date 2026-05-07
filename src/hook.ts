@@ -38,14 +38,16 @@ import type {
 import type { TestError } from "@vitest/utils";
 import { Hook } from "import-in-the-middle";
 
-const sdk = new OtelSDK();
-const tracer = trace.getTracer("dagger.io/vitest");
-const logger = logs.getLogger("dagger.io/vitest");
-
 const ATTR_UI_BOUNDARY = "dagger.io/ui.boundary";
 const STDIO_STREAM_ATTR = "stdio.stream";
 const STDIO_STREAM_STDOUT = 1;
 const STDIO_STREAM_STDERR = 2;
+
+__prepareLogExporterEnv();
+
+const sdk = new OtelSDK();
+const tracer = trace.getTracer("dagger.io/vitest");
+const logger = logs.getLogger("dagger.io/vitest");
 
 type Telemetry = {
   span: Span;
@@ -60,6 +62,31 @@ const __suitesTelemetry = new WeakMap<Suite, Telemetry>();
 const __testsTelemetry = new WeakMap<Test, Telemetry>();
 const __PATCHED_CONSOLE_METHOD = Symbol.for("dagger.io/vitest.console.telemetry");
 let __emittingConsoleTelemetry = false;
+
+function __prepareLogExporterEnv(): void {
+  if (!process.env.OTEL_EXPORTER_OTLP_ENDPOINT) {
+    __setEnvIfUnset(
+      "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
+      __logEndpoint(process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT),
+    );
+  }
+
+  __setEnvIfUnset(
+    "OTEL_EXPORTER_OTLP_LOGS_PROTOCOL",
+    process.env.OTEL_EXPORTER_OTLP_TRACES_PROTOCOL ?? process.env.OTEL_EXPORTER_OTLP_PROTOCOL,
+  );
+}
+
+function __setEnvIfUnset(name: string, value?: string): void {
+  if (process.env[name] === undefined && value !== undefined) {
+    process.env[name] = value;
+  }
+}
+
+function __logEndpoint(endpoint?: string): string | undefined {
+  const logEndpoint = endpoint?.replace(/\/v1\/traces\/?$/, "/v1/logs");
+  return logEndpoint !== endpoint ? logEndpoint : undefined;
+}
 
 /**
  * Update the testFn of vitest to execute the function inside
