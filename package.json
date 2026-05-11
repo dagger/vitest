@@ -55,6 +55,7 @@
   "homepage": "https://github.com/dagger/vitest",
   "dependencies": {
     "@dagger.io/telemetry": "^0.0.5",
+    "@opentelemetry/api-logs": "^0.209.0",
     "@opentelemetry/sdk-node": "^0.209.0",
     "@opentelemetry/semantic-conventions": "^1.29.0",
     "import-in-the-middle": "^2.0.6"

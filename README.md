@@ -41,6 +41,8 @@ Test spans include `dagger.io/ui.boundary` plus OpenTelemetry test semantic conv
 
 Suite spans include `dagger.io/ui.boundary`, `test.suite.name`, and `test.suite.run.status`.
 
+Console output captured by Vitest is also emitted as OpenTelemetry log records associated with the test span, using `stdio.stream` to distinguish stdout and stderr.
+
 ## Span Hierarchy
 
 ```
