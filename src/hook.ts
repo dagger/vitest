@@ -134,6 +134,10 @@ function __deserializeError(error: TestError): Error {
   return err;
 }
 
+function __formatErrorForLog(error: Error): string {
+  return `${(error.stack || error.message || String(error)).trimEnd()}\n`;
+}
+
 /**
  * If the method exist, use a Proxy to call the given function before
  * the method.
@@ -191,29 +195,34 @@ function __emitConsoleTelemetry(stream: ConsoleStream, args: any[]): void {
     return;
   }
 
-  const activeContext = context.active();
-  const activeSpan = trace.getSpan(activeContext);
+  __emittingConsoleTelemetry = true;
+  try {
+    __emitStdioTelemetry(context.active(), stream, `${format(...args)}\n`);
+  } finally {
+    __emittingConsoleTelemetry = false;
+  }
+}
+
+function __emitStdioTelemetry(logContext: Context, stream: ConsoleStream, body: string): void {
+  const activeSpan = trace.getSpan(logContext);
   if (!activeSpan || !isSpanContextValid(activeSpan.spanContext())) {
     return;
   }
 
-  __emittingConsoleTelemetry = true;
   try {
     logger.emit({
       timestamp: Date.now(),
       observedTimestamp: Date.now(),
       severityNumber: stream === "stderr" ? SeverityNumber.ERROR : SeverityNumber.INFO,
       severityText: stream === "stderr" ? "ERROR" : "INFO",
-      body: `${format(...args)}\n`,
+      body,
       attributes: {
         [STDIO_STREAM_ATTR]: stream === "stderr" ? STDIO_STREAM_STDERR : STDIO_STREAM_STDOUT,
       },
-      context: activeContext,
+      context: logContext,
     });
   } catch {
     // Do not let telemetry log emission affect the test run.
-  } finally {
-    __emittingConsoleTelemetry = false;
   }
 }
 
@@ -394,25 +403,25 @@ function addTelemetryToRunner(runner: VitestRunner): VitestRunner {
   // Happen on test completion.
   // Close the span, eventually set an error if the test failed.
   runner.onAfterRunTask = extendVitestRunnerMethod(runner.onAfterRunTask, (test: Test) => {
-    const testSpan = __testsTelemetry.get(test)?.span;
-    if (!testSpan) return;
+    const testTelemetry = __testsTelemetry.get(test);
+    const testSpan = testTelemetry?.span;
+    if (!testSpan || !testTelemetry) return;
 
     testSpan.setAttribute(ATTR_TEST_CASE_RESULT_STATUS, __testCaseResultStatus(test.result?.state));
 
     if (test.result?.state === "fail") {
       const errors = test.result.errors;
-      let errorMessage: string | undefined;
       if (errors) {
         for (const error of errors) {
-          testSpan.recordException(__deserializeError(error));
+          const err = __deserializeError(error);
+          testSpan.recordException(err);
+          __emitStdioTelemetry(testTelemetry.ctx, "stderr", __formatErrorForLog(err));
         }
-
-        errorMessage = __deserializeError(errors[0])?.message ?? "Test failed";
       }
 
       testSpan.setStatus({
         code: SpanStatusCode.ERROR,
-        message: errorMessage,
+        message: "test failed",
       });
     } else if (test.result?.state === "pass") {
       testSpan.setStatus({ code: SpanStatusCode.OK });
