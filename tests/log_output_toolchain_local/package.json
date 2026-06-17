@@ -8,6 +8,6 @@
   },
   "devDependencies": {
     "@dagger.io/vitest": "file:../..",
-    "vitest": "^4.0.17"
+    "vitest": "^4.1.0"
   }
 }
