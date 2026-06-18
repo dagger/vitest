@@ -7,11 +7,10 @@
  */
 
 import { register } from "node:module";
-import { pathToFileURL } from "node:url";
 
 // Register the import-in-the-middle hook loader
 // This MUST happen before any imports of vitest/runner
-register("import-in-the-middle/hook.mjs", pathToFileURL(import.meta.url));
+register("import-in-the-middle/hook.mjs", import.meta.url);
 
 // Now import and set up the actual hooks
 // This runs in the loader context
