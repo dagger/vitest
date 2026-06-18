@@ -71,7 +71,7 @@ type Vitest {
 
     # mount and install the otel library and then execute the tests
     runtime.
-      withEnvVariable("NODE_OPTIONS", "$NODE_OPTIONS --import @dagger.io/vitest/register", expand: true).
+      withEnvVariable("NODE_OPTIONS", "$NODE_OPTIONS --import /vitest/dist/esm/register.mjs", expand: true).
       withEnvVariable("DAGGER_VITEST_CACHE_BUSTER", UUID.v7).
       withExec(["npx", "vitest"] + flags + files).
       sync

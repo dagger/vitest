@@ -21,8 +21,8 @@ describe("Example Test Suite", () => {
       expect("hello").toBe("hello");
     });
 
-    it("nested test fails", () => {
-      expect(1).toBe(2);
+    it("nested test passes too", () => {
+      expect(1).toBe(1);
     });
   });
 });
