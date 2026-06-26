@@ -10,17 +10,17 @@ type Vitest {
   """
   The base image to use.
   """
-  pub baseImageAddress: String!
+  pub baseImageAddress: String
 
   """
   The package manager to use.
   """
-  pub packageManager: String!
+  pub packageManager: String
 
   new(
     workspace: Workspace!,
-    baseImageAddress: String! = "node:25-alpine",
-    packageManager: String! = "npm",
+    baseImageAddress: String = null,
+    packageManager: String = null,
   ) {
     self.source = workspace.directory("/", exclude: ["**/node_modules", "/dist", "/build"])
     self.baseImageAddress = baseImageAddress
@@ -45,14 +45,11 @@ type Vitest {
   """
   flags: [String!]! = []
   ): Void @check {
-    let runtime = base
+    let node = nodejs(source, baseImageAddress, packageManager)
+    let packageManager = node.packageManager
+    let runtime = node.base
 
-    # optionally build first
-    if (build) {
-      runtime = runtime.withExec([packageManager, "run", "build"])
-    }
-
-    # install the local build of the otel library
+    # Install the local build of the otel library.
     let installLibrary = [packageManager, "install", "-D", "/vitest", "--install-links"]
     # yarn uses add instead of install
     if (packageManager == "yarn") {
@@ -69,11 +66,16 @@ type Vitest {
       withMountedDirectory("/vitest", buildLibrary).
       withExec(installLibrary)
 
+    # optionally build first
+    if (build) {
+      runtime = runtime.withExec([packageManager, "run", "build"])
+    }
+
     # mount and install the otel library and then execute the tests
-    runtime.
-      withEnvVariable("NODE_OPTIONS", "$NODE_OPTIONS --import /vitest/dist/esm/register.mjs", expand: true).
-      withEnvVariable("DAGGER_VITEST_CACHE_BUSTER", UUID.v7).
-      withExec(["npx", "vitest"] + flags + files).
+    node.
+      exec(["vitest"] + flags + files, runtime.
+        withEnvVariable("NODE_OPTIONS", "$NODE_OPTIONS --import /vitest/dist/esm/register.mjs", expand: true).
+        withEnvVariable("DAGGER_VITEST_CACHE_BUSTER", UUID.v7)).
       sync
 
     null
@@ -83,34 +85,11 @@ type Vitest {
   List the tests
   """
   pub list(): String {
-    let cmd = ["npx", "vitest", "list"]
+    let node = nodejs(source, baseImageAddress, packageManager)
 
-    base.
-      withExec(cmd).
+    node.
+      exec(["vitest", "list"], node.withInstallAll(node.base)).
       stdout
-  }
-
-  """
-  Runtime container for executing tests
-  """
-  let base: Container! {
-    # set cache variables for all supported package managers
-    let base = container.from(baseImageAddress).
-      withMountedCache("/root/.packages", cacheVolume("node-toolchain-packages")).
-      withEnvVariable("npm_config_cache", "/root/.packages").
-      withEnvVariable("YARN_CACHE_FOLDER", "/root/.packages").
-      withEnvVariable("PNPM_HOME", "/root/.packages").
-      withEnvVariable("BUN_INSTALL_CACHE_DIR", "/root/.packages")
-
-    if (packageManager == "pnpm" and baseImageAddress.contains("node:")) {
-      base = base.withExec(["corepack", "enable"])
-    }
-
-    base.
-      withDirectory("/src", source).
-      withWorkdir("/src").
-      withEnvVariable("CI", "true").
-      withExec([packageManager, "install"])
   }
 
   """
