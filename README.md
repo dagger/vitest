@@ -15,6 +15,25 @@ dagger check
 
 You can customize vitest using [`customization`](https://docs.dagger.io/core-concepts/toolchains/#customizing-toolchains)
 
+#### Project discovery
+
+Discovery is anchored at the directory you run Dagger from, not at the workspace
+root: `dagger check` tests the project you are in and the projects beneath it. A
+project is any directory holding a `vitest.config.*` or `vite.config.*` file
+(`node_modules` excluded).
+
+```bash
+# from the workspace root of a monorepo holding a/ and b/
+dagger call vitest projects   # -> a, b
+
+# from a/
+dagger call vitest projects   # -> .
+```
+
+A directory holding no config of its own sits inside its enclosing project, so
+that project is reported as a `..`-relative path and runs too. To run a single
+project, enter it.
+
 ### As a library
 
 If you prefer to directly install the vitest library, run:
