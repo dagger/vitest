@@ -13,6 +13,14 @@ type Vitest {
   pub packageManager: String! = "npm"
 
   """
+  Extra workspace-root include patterns mounted alongside the project directory,
+  at their workspace-relative paths, so relative imports that escape the project
+  resolve as they do on disk. Use this for fixtures or schemas shared with code
+  elsewhere in a monorepo, e.g. ["testdata/**", "schema/*.json"].
+  """
+  pub includeExtraFiles: [String!]! = []
+
+  """
   Filenames that mark a Vitest project: Vitest reads its own `vitest.config.*`
   and falls back to `vite.config.*`.
   """
@@ -151,6 +159,35 @@ type Vitest {
   }
 
   """
+  The workspace-root-relative path of a project, "." at the root
+  """
+  let workspacePath(ws: Workspace!, path: String!): String! {
+    # Searching for "." from a path returns that path resolved against the
+    # workspace root, which also normalizes ".."-relative project paths.
+    let found = ws.findUp(name: ".", from: path)
+
+    if (found == null or found == "/") {
+      "."
+    } else {
+      found.trimPrefix("/")
+    }
+  }
+
+  """
+  The tree mounted for a project: the project at its workspace-relative path,
+  plus any includeExtraFiles at theirs
+  """
+  let tree(ws: Workspace!, path: String!): Directory! {
+    let tree = directory.withDirectory(workspacePath(ws, path), source(ws, path: path))
+
+    if (includeExtraFiles.length > 0) {
+      tree = tree.withDirectory(".", ws.directory("/", include: includeExtraFiles, exclude: ["**/node_modules"]))
+    }
+
+    tree
+  }
+
+  """
   Runtime container for executing the tests of a project
   """
   let base(ws: Workspace!, path: String!): Container! {
@@ -166,9 +203,12 @@ type Vitest {
       base = base.withExec(["corepack", "enable"])
     }
 
+    let projectPath = workspacePath(ws, path)
+    let workdir = if (projectPath == ".") { "/src" } else { "/src/" + projectPath }
+
     base.
-      withDirectory("/src", source(ws, path: path)).
-      withWorkdir("/src").
+      withDirectory("/src", tree(ws, path)).
+      withWorkdir(workdir).
       withEnvVariable("CI", "true").
       withExec([packageManager, "install"])
   }

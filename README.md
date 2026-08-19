@@ -34,6 +34,19 @@ A directory holding no config of its own sits inside its enclosing project, so
 that project is reported as a `..`-relative path and runs too. To run a single
 project, enter it.
 
+#### Files outside the project
+
+Only the project directory is mounted into the test container. When a test
+reads a file that lives outside it — typically a fixture shared with code
+elsewhere in a monorepo — list workspace-root patterns in `includeExtraFiles`.
+They are mounted at their workspace-relative paths alongside the project, so
+relative imports that escape the project directory resolve as they do on disk:
+
+```toml
+[modules.vitest.settings]
+includeExtraFiles = ["testdata/**", "schema/*.json"]
+```
+
 ### As a library
 
 If you prefer to directly install the vitest library, run:

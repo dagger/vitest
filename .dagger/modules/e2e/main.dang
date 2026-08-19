@@ -178,4 +178,50 @@ type E2e {
 
     null
   }
+
+  """
+  A test in project `a` reading a fixture at the workspace root by a relative
+  path that escapes the project directory.
+  """
+  let fixtureTest: String! = "import { readFileSync } from 'node:fs'\nimport { join } from 'node:path'\nimport { expect, test } from 'vitest'\ntest('shared fixture', () => {\n  const fixture = JSON.parse(readFileSync(join(__dirname, '../../fixtures/shared.json'), 'utf8'))\n  expect(fixture.greeting).toBe('hello')\n})\n"
+
+  """
+  The sibling projects plus a fixture shared at the workspace root, asserted
+  against by a test in `a`:
+
+      fixtures/shared.json
+      a/src/shared.test.ts   <- reads ../../fixtures/shared.json
+      b/vitest.config.ts
+  """
+  let sharedFixture: Directory! {
+    siblings.
+      withNewFile("fixtures/shared.json", "{\"greeting\": \"hello\"}\n").
+      withNewFile("a/src/shared.test.ts", fixtureTest)
+  }
+
+  """
+  Without `includeExtraFiles` a file outside the project is not in the
+  container; with it, the file is mounted at its workspace-relative path so the
+  test's relative import resolves as it does on disk.
+  """
+  pub includeExtraFilesCheck: Void @check {
+    if (testAllFailed(sharedFixture, "a") == false) {
+      raise "the fixture outside the project should not have been reachable by default"
+    }
+
+    vitest(includeExtraFiles: ["fixtures/**"]).testAll(sharedFixture.asWorkspace(cwd: "a"))
+
+    null
+  }
+
+  """
+  A ".."-relative project path resolves to the same workspace-relative mount:
+  from a subdirectory of `a`, the enclosing project still reaches the shared
+  fixture through `includeExtraFiles`.
+  """
+  pub includeExtraFilesAncestorCheck: Void @check {
+    vitest(includeExtraFiles: ["fixtures/**"]).testAll(sharedFixture.withDirectory("a/work", directory).asWorkspace(cwd: "a/work"))
+
+    null
+  }
 }
