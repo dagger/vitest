@@ -47,6 +47,25 @@ relative imports that escape the project directory resolve as they do on disk:
 includeExtraFiles = ["testdata/**", "schema/*.json"]
 ```
 
+#### Tests that call Dagger
+
+Tests are run with access to the Dagger session running them, so a test using a
+Dagger SDK connects to that session rather than provisioning an engine of its
+own:
+
+```ts
+import { connection, dag } from "@dagger.io/dagger"
+
+test("builds", async () => {
+  await connection(async () => {
+    expect(await dag.container().from("alpine").withExec(["echo", "hi"]).stdout()).toBe("hi\n")
+  })
+})
+```
+
+Such tests are usually slower than the 5s Vitest allows by default, so raise
+`testTimeout` in your Vitest config.
+
 ### As a library
 
 If you prefer to directly install the vitest library, run:
