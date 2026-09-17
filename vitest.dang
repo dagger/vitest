@@ -122,7 +122,11 @@ type Vitest {
     runtime.
       withEnvVariable("NODE_OPTIONS", "$NODE_OPTIONS --import /vitest/dist/esm/register.mjs", expand: true).
       withEnvVariable("DAGGER_VITEST_CACHE_BUSTER", UUID.v7).
-      withExec(["npx", "vitest"] + flags + files).
+      # Nested so that tests using a Dagger SDK connect to the session already
+      # running them, rather than failing while provisioning an engine of their
+      # own. Nested clients get no host access (that stays scoped to the main
+      # client), so this hands the tests nothing they could not already reach.
+      withExec(["npx", "vitest"] + flags + files, experimentalPrivilegedNesting: true).
       sync
 
     null

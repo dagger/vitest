@@ -224,4 +224,20 @@ type E2e {
 
     null
   }
+
+  """
+  A test asserting it can see the Dagger session running it, through the two
+  environment variables an SDK reads to connect instead of provisioning.
+  """
+  let sessionTest: String! = "import { expect, test } from 'vitest'\ntest('dagger session', () => {\n  expect(process.env.DAGGER_SESSION_PORT).toBeDefined()\n  expect(process.env.DAGGER_SESSION_TOKEN).toBeDefined()\n})\n"
+
+  """
+  The tests are handed the Dagger session already running them, so an SDK
+  connects to it instead of trying to provision an engine of its own.
+  """
+  pub daggerSessionCheck: Void @check {
+    vitest().testAll(siblings.withNewFile("a/src/session.test.ts", sessionTest).asWorkspace(cwd: "a"))
+
+    null
+  }
 }
