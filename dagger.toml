@@ -12,7 +12,3 @@ module = "dagger-dang-sdk"
 [sdks.dang.scopes."."]
 is-module = true
 name = "vitest"
-
-[sdks.dang.scopes.".dagger/modules/e2e"]
-clients = ["./."]
-is-module = true
