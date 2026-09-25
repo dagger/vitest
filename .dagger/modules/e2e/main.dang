@@ -8,15 +8,44 @@ type E2e {
   repo: String! = "https://github.com/dagger/hello-dagger"
 
   """
+  Run a check, raising its failure. A check called through a dependency comes
+  back as a Check that has not run.
+  """
+  let run(check: Check!): Void {
+    # Check.error is not null for a passing check when read from Dang, so ask
+    # pass first and read the message only on failure.
+    if (check.pass == false) {
+      raise check.error.message ?? "check failed"
+    }
+    null
+  }
+
+  let assert(condition: Boolean!, message: String!): Void {
+    if (condition == false) { raise message }
+    null
+  }
+
+  """
   Run the vitest toolchain against a real-world repository.
 
-  This pulls the hello-dagger repo, exposes it as a Workspace, and runs
-  the vitest `testAll` check against it end-to-end.
+  This pulls the hello-dagger repo, exposes it as a Workspace, and runs the
+  test-file batch of every discovered project end-to-end, as `dagger check`
+  does.
   """
   testHelloDagger: Void @check {
-    let ws = git(repo).head.tree.asWorkspace
+    checkAll(git(repo).head.tree.asWorkspace)
+  }
 
-    vitest.testAll(ws)
+  """
+  Run the test-file batch of every project visible from the workspace's cwd,
+  as `dagger check` does with no selection.
+  """
+  let checkAll(ws: Workspace!): Void {
+    let projects = vitest.projects(ws)
+    projects.keys.each { path =>
+      run(projects.get(key: path).tests(ws).batch.test(ws))
+    }
+    null
   }
 
   """
@@ -57,34 +86,28 @@ type E2e {
   Discovery from `cwd` inside a synthetic workspace built from `tree`.
   """
   let projects(tree: Directory!, cwd: String!): [String!]! {
-    vitest.projects(tree.asWorkspace(cwd: cwd))
+    vitest.projects(tree.asWorkspace(cwd: cwd)).keys
   }
 
   """
-  Fail unless discovery returned exactly the wanted paths, in any order.
+  Fail unless discovery returned exactly the wanted paths, in order.
   """
   let assertPaths(got: [String!]!, want: [String!]!, context: String!): Void {
-    let rendered = context + ": got [" + got.join(", ") + "], want [" + want.join(", ") + "]"
-
-    if (got.length != want.length) {
-      raise rendered
-    }
-    want.each { path =>
-      if (got.filter { value => value == path }.length != 1) {
-        raise rendered
-      }
+    if (got != want) {
+      raise context + ": got [" + got.join(", ") + "], want [" + want.join(", ") + "]"
     }
     null
   }
 
   """
   From a root holding no config, discovery returns every project beneath it;
-  entering one of them scopes discovery to that project alone.
+  entering one of them scopes discovery to that project alone. Keys are
+  workspace-root-relative whatever the cwd.
   """
   siblingDiscoveryCheck: Void @check {
     assertPaths(projects(siblings, "."), ["a", "b"], "from the workspace root")
-    assertPaths(projects(siblings, "a"), ["."], "from a")
-    assertPaths(projects(siblings, "b"), ["."], "from b")
+    assertPaths(projects(siblings, "a"), ["a"], "from a")
+    assertPaths(projects(siblings, "b"), ["b"], "from b")
 
     null
   }
@@ -95,8 +118,8 @@ type E2e {
   """
   nestedDiscoveryCheck: Void @check {
     assertPaths(projects(nested, "."), [".", "a", "b"], "from the workspace root")
-    assertPaths(projects(nested, "a"), ["."], "from a")
-    assertPaths(projects(nested, "b"), ["."], "from b")
+    assertPaths(projects(nested, "a"), ["a"], "from a")
+    assertPaths(projects(nested, "b"), ["b"], "from b")
 
     null
   }
@@ -115,67 +138,209 @@ type E2e {
 
   """
   From a subdirectory holding no config, the nearest enclosing project is
-  reported as a ".."-relative path alongside the projects below the cwd, and
-  that path resolves back to the enclosing project through the workspace.
+  discovered alongside the projects below the cwd, and its key resolves back
+  to the enclosing project.
   """
   ancestorDiscoveryCheck: Void @check {
     let ws = ancestor.asWorkspace(cwd: "work")
 
-    assertPaths(vitest.projects(ws), ["..", "app"], "from work")
-
-    if (ws.directory("..").glob("vitest.config.ts").length != 1) {
-      raise "the returned ancestor path did not resolve back to the enclosing project"
-    }
+    assertPaths(vitest.projects(ws).keys, [".", "work/app"], "from work")
+    assert(
+      vitest.projects(ws).get(key: ".").source(ws).glob("vitest.config.ts").length == 1,
+      "the ancestor key did not resolve back to the enclosing project",
+    )
+    assert(
+      vitest.project(ws, "..").path == ".",
+      "a cwd-relative lookup did not resolve to the enclosing project",
+    )
 
     null
   }
 
   """
-  A failing test file, used to observe which projects a run actually covered.
+  A passing test file.
+  """
+  let passingTest: String! = "import { expect, test } from 'vitest'\ntest('passes', () => { expect(1).toBe(1) })\n"
+
+  """
+  A failing test file, used to observe which projects and files a run
+  actually covered.
   """
   let failingTest: String! = "import { expect, test } from 'vitest'\ntest('fails', () => { expect(1).toBe(2) })\n"
 
   """
-  Whether `testAll` from `cwd` observed the failure planted in `tree`.
+  Whether running every project from `cwd` observed the failure planted in
+  `tree`.
   """
-  let testAllFailed(tree: Directory!, cwd: String!): Boolean! {
+  let checkFailed(tree: Directory!, cwd: String!): Boolean! {
     {
-      vitest.testAll(tree.asWorkspace(cwd: cwd))
+      checkAll(tree.asWorkspace(cwd: cwd))
       false
     } rescue true
   }
 
   """
-  `testAll` runs every project below the cwd, and entering one of them leaves
-  its siblings out of reach.
+  Every project below the cwd runs, and entering one of them leaves its
+  siblings out of reach.
   """
   descendantScopeCheck: Void @check {
     let broken = siblings.withNewFile("b/src/broken.test.ts", failingTest)
 
-    if (testAllFailed(broken, ".") == false) {
-      raise "testAll from the workspace root should have run the project b"
-    }
-    if (testAllFailed(broken, "a")) {
-      raise "testAll from a should not have run the sibling project b"
-    }
-    if (testAllFailed(
-      siblings.withNewFile("a/src/broken.test.ts", failingTest),
-      "a",
-    ) == false) {
-      raise "testAll from a should have run a's own tests"
-    }
+    assert(checkFailed(broken, "."), "checks from the workspace root should have run the project b")
+    assert(checkFailed(broken, "a") == false, "checks from a should not have run the sibling project b")
+    assert(
+      checkFailed(siblings.withNewFile("a/src/broken.test.ts", failingTest), "a"),
+      "checks from a should have run a's own tests",
+    )
+
+    # The project-level batch, for API callers, covers the same projects.
+    let projectsFailed = {
+      vitest.projects(broken.asWorkspace(cwd: ".")).batch.test(
+        broken.asWorkspace(cwd: "."),
+      )
+      false
+    } rescue true
+    assert(projectsFailed, "the projects batch should have run the project b")
 
     null
   }
 
   """
-  A cwd holding no config sits inside its enclosing project, so `testAll` runs
-  that project too rather than only the ones below the cwd.
+  A cwd holding no config sits inside its enclosing project, so that project
+  runs too rather than only the ones below the cwd.
   """
   ancestorScopeCheck: Void @check {
-    if (testAllFailed(ancestor.withNewFile("src/broken.test.ts", failingTest), "work") == false) {
-      raise "testAll from work should have run the enclosing project"
+    assert(
+      checkFailed(ancestor.withNewFile("src/broken.test.ts", failingTest), "work"),
+      "checks from work should have run the enclosing project",
+    )
+
+    null
+  }
+
+  """
+  A project exercising test-file discovery and filtered runs:
+
+      src/a.test.ts           passes
+      src/a.test.tsx          fails   (a Vitest filter for src/a.test.ts matches it)
+      src/aa.test.ts          fails
+      src/notes.test.md               (not a test file)
+      nested/vitest.config.ts         (a nested project, not this one's)
+      nested/src/n.test.ts
+  """
+  let testFilesFixture: Directory! {
+    project
+      .withNewFile("src/a.test.ts", passingTest)
+      .withNewFile("src/a.test.tsx", failingTest)
+      .withNewFile("src/aa.test.ts", failingTest)
+      .withNewFile("src/notes.test.md", "not a test\n")
+      .withNewFile("nested/vitest.config.ts", "export default {}\n")
+      .withNewFile("nested/src/n.test.ts", passingTest)
+  }
+
+  """
+  Test files are keyed by project-relative path in byte order, leaving out
+  files outside Vitest's default include and nested projects' files. get and
+  subset follow the keys, and a subset runs exactly its own files: filtering
+  to a passing file in a project that also holds failing files passes, even
+  when Vitest's substring filter would match a failing one too.
+  """
+  testFilesCollectionCheck: Void @check {
+    let ws = testFilesFixture.asWorkspace
+    let tests = vitest.projects(ws).get(key: ".").tests(ws)
+
+    assertPaths(
+      tests.keys,
+      [
+        "src/a.test.ts",
+        "src/a.test.tsx",
+        "src/aa.test.ts",
+        "src/components/__tests__/HelloWorld.spec.ts",
+      ],
+      "test files of the root project",
+    )
+    assertPaths(
+      vitest.projects(ws).get(key: "nested").tests(ws).keys,
+      ["src/n.test.ts"],
+      "test files of the nested project",
+    )
+
+    let one = "src/a.test.ts"
+    assert(tests.get(key: one).path == one, "get did not return the test file at its key")
+    run(tests.subset(keys: [one]).batch.test(ws))
+    run(tests.get(key: one).test(ws))
+    run(
+      tests.subset(keys: [one, "src/components/__tests__/HelloWorld.spec.ts"]).batch.test(ws),
+    )
+
+    let pair = tests.subset(keys: ["src/aa.test.ts", one])
+    assertPaths(pair.keys, [one, "src/aa.test.ts"], "subset order")
+    let pairFailed = { run(pair.batch.test(ws)); false } rescue true
+    assert(pairFailed, "a subset holding a failing file passed")
+
+    let outside = { pair.get(key: "src/a.test.tsx").path } rescue {
+      err: Error => "rejected"
     }
+    assert(outside == "rejected", "get accepted a key outside the subset")
+
+    let unknown = { tests.subset(keys: ["src/nope.test.ts"]).keys.join(","); "accepted" } rescue {
+      err: Error => "rejected"
+    }
+    assert(unknown == "rejected", "subset accepted an unknown key")
+
+    let duplicate = { tests.subset(keys: [one, one]).keys.join(","); "accepted" } rescue {
+      err: Error => "rejected"
+    }
+    assert(duplicate == "rejected", "subset accepted a duplicate key")
+
+    let none = tests.subset(keys: [])
+    assert(none.keys.length == 0, "empty subset kept keys: " + none.keys.join(", "))
+    run(none.batch.test(ws))
+
+    null
+  }
+
+  """
+  A project whose Vitest config adds a file that static discovery does not
+  see:
+
+      vitest.config.ts        include adds checks/**
+      checks/fails.ts         fails
+      src/a.test.ts           passes
+  """
+  let configIncludeFixture: Directory! {
+    project
+      .withNewFile(
+        "vitest.config.ts",
+        "import { mergeConfig, defineConfig, configDefaults } from 'vitest/config'\nimport viteConfig from './vite.config'\nexport default mergeConfig(viteConfig, defineConfig({\n  test: {\n    environment: 'jsdom',\n    include: [...configDefaults.include, 'checks/**/*.ts'],\n  },\n}))\n",
+      )
+      .withNewFile("checks/fails.ts", failingTest)
+      .withNewFile("src/a.test.ts", passingTest)
+  }
+
+  """
+  With nothing selected out, the batch runs the whole project natively, with
+  the project's own Vitest config; with a selection, it runs only the selected
+  files.
+  """
+  wholeVersusFilteredCheck: Void @check {
+    let ws = configIncludeFixture.asWorkspace
+    let tests = vitest.projects(ws).get(key: ".").tests(ws)
+
+    assert(
+      tests.keys.contains("checks/fails.ts") == false,
+      "static discovery read the config's include",
+    )
+    let wholeFailed = { run(tests.batch.test(ws)); false } rescue true
+    assert(wholeFailed, "the unfiltered batch did not run the project as a whole")
+
+    let projectFailed = {
+      vitest.projects(ws).get(key: ".").test(ws)
+      false
+    } rescue true
+    assert(projectFailed, "the project's own test did not run the project as a whole")
+
+    run(tests.subset(keys: ["src/a.test.ts"]).batch.test(ws))
 
     null
   }
@@ -203,29 +368,34 @@ type E2e {
   """
   Without `includeExtraFiles` a file outside the project is not in the
   container; with it, the file is mounted at its workspace-relative path so the
-  test's relative import resolves as it does on disk.
+  test's relative import resolves as it does on disk, in a whole run and in a
+  run filtered to that file.
   """
   includeExtraFilesCheck: Void @check {
-    if (testAllFailed(sharedFixture, "a") == false) {
-      raise "the fixture outside the project should not have been reachable by default"
-    }
-
-    vitest(includeExtraFiles: ["fixtures/**"]).testAll(
-      sharedFixture.asWorkspace(cwd: "a"),
+    assert(
+      checkFailed(sharedFixture, "a"),
+      "the fixture outside the project should not have been reachable by default",
     )
+
+    let ws = sharedFixture.asWorkspace(cwd: "a")
+    let tests = vitest(includeExtraFiles: ["fixtures/**"]).projects(ws).get(key: "a").tests(ws)
+    run(tests.batch.test(ws))
+    run(tests.subset(keys: ["src/shared.test.ts"]).batch.test(ws))
 
     null
   }
 
   """
-  A ".."-relative project path resolves to the same workspace-relative mount:
+  A cwd-relative ".." project resolves to the same workspace-relative mount:
   from a subdirectory of `a`, the enclosing project still reaches the shared
   fixture through `includeExtraFiles`.
   """
   includeExtraFilesAncestorCheck: Void @check {
-    vitest(includeExtraFiles: ["fixtures/**"]).testAll(
-      sharedFixture.withDirectory("a/work", directory).asWorkspace(cwd: "a/work"),
-    )
+    let ws = sharedFixture.withDirectory("a/work", directory).asWorkspace(cwd: "a/work")
+    let tool = vitest(includeExtraFiles: ["fixtures/**"])
+
+    assertPaths(tool.projects(ws).keys, ["a"], "from a/work")
+    run(tool.projects(ws).get(key: "a").tests(ws).batch.test(ws))
 
     null
   }
@@ -241,9 +411,30 @@ type E2e {
   connects to it instead of trying to provision an engine of its own.
   """
   daggerSessionCheck: Void @check {
-    vitest.testAll(
-      siblings.withNewFile("a/src/session.test.ts", sessionTest).asWorkspace(cwd: "a"),
-    )
+    let ws = siblings.withNewFile("a/src/session.test.ts", sessionTest).asWorkspace(cwd: "a")
+    let tests = vitest.projects(ws).get(key: "a").tests(ws)
+
+    run(tests.subset(keys: ["src/session.test.ts"]).batch.test(ws))
+
+    null
+  }
+
+  """
+  The `flags` setting reaches every vitest run: an unknown flag makes Vitest
+  fail where the default passes.
+  """
+  flagsCheck: Void @check {
+    let ws = project.asWorkspace
+    let one = "src/components/__tests__/HelloWorld.spec.ts"
+
+    run(vitest.projects(ws).get(key: ".").tests(ws).get(key: one).test(ws))
+    let failed = {
+      run(
+        vitest(flags: ["--no-such-flag"]).projects(ws).get(key: ".").tests(ws).get(key: one).test(ws),
+      )
+      false
+    } rescue true
+    assert(failed, "the flags setting did not reach vitest")
 
     null
   }

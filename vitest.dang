@@ -21,6 +21,16 @@ type Vitest {
   includeExtraFiles: [String!]! = []
 
   """
+  Run the package manager's build script before the tests.
+  """
+  build: Boolean! = false
+
+  """
+  Flags to pass to every vitest run.
+  """
+  flags: [String!]! = []
+
+  """
   Filenames that mark a Vitest project: Vitest reads its own `vitest.config.*`
   and falls back to `vite.config.*`.
   """
@@ -40,61 +50,106 @@ type Vitest {
   ]
 
   """
-  The Vitest projects visible from the client's cwd: every project at or below
-  it, plus the nearest enclosing project when the cwd holds no config of its
-  own. Paths are cwd-relative, so a ".." prefix marks an enclosing project.
+  Vitest projects at or below the working directory, keyed by project root.
   """
-  projects(ws: Workspace!): [String!]! {
-    ws.findRoots(
-      markers: configNames,
-      exclude: ["**/node_modules/**"],
-    )
+  projects(ws: Workspace!): VitestProjects! {
+    VitestProjects(paths: sorted(projectRoots(ws, "")), tool: self)
   }
 
   """
-  Execute the tests of every project visible from the client's cwd. A cwd that
-  holds no config of its own sits inside its enclosing project, so that project
-  runs too; enter a subproject to run it alone.
+  The Vitest project rooted at path, relative to the working directory.
   """
-  testAll(
-    ws: Workspace!,
-    """
-    Run build before test
-    """
-    build: Boolean! = false,
-    """
-    Flags to pass to vitest
-    """
-    flags: [String!]! = [],
-  ): Void @check {
-    projects(ws).each { path => test(ws, path: path, build: build, flags: flags) }
+  project(ws: Workspace!, path: String!): VitestProject! {
+    projectAt(workspacePath(ws, path))
+  }
 
-    null
+  let projectAt(path: String!): VitestProject! {
+    VitestProject(path: path, tool: self)
+  }
+
+  # Project roots found from `start` (the cwd when empty), made
+  # workspace-root-relative. From a cwd that holds no config of its own, the
+  # nearest enclosing project is found too, as findRoots does.
+  let projectRoots(ws: Workspace!, start: String!): [String!]! {
+    let roots = if (start == "") {
+      ws.findRoots(markers: configNames, exclude: ["**/node_modules/**"])
+    } else {
+      ws.findRoots(start: start, markers: configNames, exclude: ["**/node_modules/**"])
+    }
+    roots.map { root => workspacePath(ws, root) }.uniq
   }
 
   """
-  Execute the tests of a single project
+  The workspace-root-relative path of a cwd-relative path, "." at the root
   """
-  test(
-    ws: Workspace!,
-    """
-    Path of the project to test, relative to the client's cwd
-    """
-    path: String! = ".",
-    """
-    List of files to test
-    """
-    files: [String!]! = [],
-    """
-    Run build before test
-    """
-    build: Boolean! = false,
-    """
-    Flags to pass to vitest
-    """
-    flags: [String!]! = [],
-  ): Void {
-    let runtime = base(ws, path)
+  let workspacePath(ws: Workspace!, cwdPath: String!): String! {
+    # findRoots answers relative to the workspace cwd -- "." for the cwd
+    # itself and ".." for an enclosing project -- while keys are
+    # workspace-root-relative.
+    let segments = cwdPath.split("/").filter { segment => segment != "" and segment != "." }
+    let up = segments.filter { segment => segment == ".." }.length
+    let down = segments.filter { segment => segment != ".." }
+    let resolved = ws.cwd.split("/").filter { segment => segment != "" }.dropLast(up) + down
+
+    if (resolved.length == 0) { "." } else { resolved.join("/") }
+  }
+
+  # Byte-order sort, so keys are stable between runs.
+  let sorted(items: [String!]!): [String!]! {
+    let empty: [String!]! = []
+    items.reduce(empty) { acc, item =>
+      acc.takeWhile { x => x <= item } + [item] + acc.dropWhile { x => x <= item }
+    }
+  }
+
+  """
+  Runtime container for executing the tests of a project
+  """
+  let base(ws: Workspace!, project: VitestProject!): Container! {
+    # set cache variables for all supported package managers
+    let base = container
+      .from(baseImageAddress)
+      .withMountedCache("/root/.packages", cacheVolume("node-toolchain-packages"))
+      .withEnvVariable("npm_config_cache", "/root/.packages")
+      .withEnvVariable("YARN_CACHE_FOLDER", "/root/.packages")
+      .withEnvVariable("PNPM_HOME", "/root/.packages")
+      .withEnvVariable("BUN_INSTALL_CACHE_DIR", "/root/.packages")
+
+    if (packageManager == "pnpm" and baseImageAddress.contains("node:")) {
+      base = base.withExec(["corepack", "enable"])
+    }
+
+    let workdir = if (project.path == ".") { "/src" } else { "/src/" + project.path }
+
+    base
+      .withDirectory("/src", tree(ws, project))
+      .withWorkdir(workdir)
+      .withEnvVariable("CI", "true")
+      .withExec([packageManager, "install"])
+  }
+
+  """
+  The tree mounted for a project: the project at its workspace-relative path,
+  plus any includeExtraFiles at theirs
+  """
+  let tree(ws: Workspace!, project: VitestProject!): Directory! {
+    let tree = directory.withDirectory(project.path, project.source(ws))
+
+    if (includeExtraFiles.length > 0) {
+      tree = tree.withDirectory(
+        ".",
+        ws.directory("/", include: includeExtraFiles, exclude: ["**/node_modules"]),
+      )
+    }
+
+    tree
+  }
+
+  """
+  Run vitest in a project with the given extra arguments
+  """
+  let runVitest(ws: Workspace!, project: VitestProject!, args: [String!]!): Container! {
+    let runtime = base(ws, project)
 
     # optionally build first
     if (build) {
@@ -130,99 +185,7 @@ type Vitest {
       # running them, rather than failing while provisioning an engine of their
       # own. Nested clients get no host access (that stays scoped to the main
       # client), so this hands the tests nothing they could not already reach.
-      .withExec(["npx", "vitest"] + flags + files, experimentalPrivilegedNesting: true)
-      .sync
-
-    null
-  }
-
-  """
-  List the tests of a single project
-  """
-  list(
-    ws: Workspace!,
-    """
-    Path of the project to list, relative to the client's cwd
-    """
-    path: String! = ".",
-  ): String {
-    let cmd = ["npx", "vitest", "list"]
-
-    base(ws, path)
-      .withExec(cmd)
-      .stdout
-  }
-
-  """
-  The source directory of a project, relative to the client's cwd
-  """
-  source(
-    ws: Workspace!,
-    """
-    Path of the project, relative to the client's cwd
-    """
-    path: String! = ".",
-  ): Directory! {
-    ws.directory(path, exclude: ["**/node_modules", "dist", "build"])
-  }
-
-  """
-  The workspace-root-relative path of a project, "." at the root
-  """
-  let workspacePath(ws: Workspace!, path: String!): String! {
-    # Searching for "." from a path returns that path resolved against the
-    # workspace root, which also normalizes ".."-relative project paths.
-    let found = ws.findUp(name: ".", from: path)
-
-    if (found == null or found == "/") {
-      "."
-    } else {
-      found.trimPrefix("/")
-    }
-  }
-
-  """
-  The tree mounted for a project: the project at its workspace-relative path,
-  plus any includeExtraFiles at theirs
-  """
-  let tree(ws: Workspace!, path: String!): Directory! {
-    let tree = directory.withDirectory(workspacePath(ws, path), source(ws, path: path))
-
-    if (includeExtraFiles.length > 0) {
-      tree = tree.withDirectory(
-        ".",
-        ws.directory("/", include: includeExtraFiles, exclude: ["**/node_modules"]),
-      )
-    }
-
-    tree
-  }
-
-  """
-  Runtime container for executing the tests of a project
-  """
-  let base(ws: Workspace!, path: String!): Container! {
-    # set cache variables for all supported package managers
-    let base = container
-      .from(baseImageAddress)
-      .withMountedCache("/root/.packages", cacheVolume("node-toolchain-packages"))
-      .withEnvVariable("npm_config_cache", "/root/.packages")
-      .withEnvVariable("YARN_CACHE_FOLDER", "/root/.packages")
-      .withEnvVariable("PNPM_HOME", "/root/.packages")
-      .withEnvVariable("BUN_INSTALL_CACHE_DIR", "/root/.packages")
-
-    if (packageManager == "pnpm" and baseImageAddress.contains("node:")) {
-      base = base.withExec(["corepack", "enable"])
-    }
-
-    let projectPath = workspacePath(ws, path)
-    let workdir = if (projectPath == ".") { "/src" } else { "/src/" + projectPath }
-
-    base
-      .withDirectory("/src", tree(ws, path))
-      .withWorkdir(workdir)
-      .withEnvVariable("CI", "true")
-      .withExec([packageManager, "install"])
+      .withExec(["npx", "vitest"] + flags + args, experimentalPrivilegedNesting: true)
   }
 
   """
@@ -240,5 +203,213 @@ type Vitest {
       .withExec(["bun", "install"])
       .withExec(["bun", "run", "build"])
       .directory("/src")
+  }
+}
+
+"""
+Vitest projects in a workspace, keyed by project root.
+"""
+type VitestProjects @collection {
+  """
+  Project root paths.
+  """
+  paths: [String!]! @keys
+
+  """
+  Settings every project runs with.
+  """
+  let tool: Vitest!
+
+  """
+  The Vitest project rooted at path.
+  """
+  project(path: String!): VitestProject! @get {
+    tool.projectAt(path)
+  }
+
+  """
+  Run the tests of the selected Vitest projects.
+  """
+  test(ws: Workspace!): Void {
+    # A selection over a list evaluates its elements concurrently, so all
+    # projects run in parallel.
+    let failures = paths.map { p => project(p) }.{{path, failure: testFailure(ws)}}
+      .filter { result => result.failure != null }
+    if (failures.length > 0) {
+      raise "Vitest project tests failed:\n" + failures.map { result =>
+        "- " + result.path + ": " + (result.failure ?? "")
+      }.join("\n")
+    }
+    null
+  }
+}
+
+"""
+A Vitest project rooted at a workspace-relative path.
+"""
+type VitestProject {
+  """
+  Project root, relative to the workspace.
+  """
+  path: String!
+
+  """
+  Settings this project runs with.
+  """
+  let tool: Vitest!
+
+  """
+  Test files in this project, keyed by project-relative path.
+  """
+  tests(ws: Workspace!): VitestTestFiles! {
+    VitestTestFiles(files: testFiles(ws), project: self)
+  }
+
+  """
+  Run this project's tests.
+  """
+  test(ws: Workspace!): Void {
+    tool.runVitest(ws, self, []).sync
+    null
+  }
+
+  """
+  List this project's tests.
+  """
+  list(ws: Workspace!): String {
+    tool.base(ws, self).withExec(["npx", "vitest", "list"]).stdout
+  }
+
+  """
+  This project's source directory.
+  """
+  source(ws: Workspace!): Directory! {
+    ws.directory(
+      if (path == ".") { "/" } else { "/" + path },
+      exclude: ["**/node_modules", "dist", "build"],
+    )
+  }
+
+  """
+  Error message from running this project's tests, or null when they pass.
+  """
+  let testFailure(ws: Workspace!): String {
+    { test(ws); null } rescue {
+      err: Error => err.message
+    }
+  }
+
+  """
+  Run exactly these project-relative test files.
+  """
+  let runFiles(ws: Workspace!, files: [String!]!): Void {
+    # Vitest takes file arguments as case-insensitive substring filters, so
+    # "a.test.ts" also runs "aa.test.ts" and "src/a.test.tsx". Exclude every
+    # other discovered test file a filter would pick up.
+    let filters = files.map { file => file.toLower }
+    let excludes = testFiles(ws).filter { other =>
+      files.contains(other) == false
+        and filters.any { filter => other.toLower.contains(filter) }
+    }
+    let args = excludes.reduce(files) { acc, other =>
+      acc + ["--exclude", globEscape(other)]
+    }
+    tool.runVitest(ws, self, args).sync
+    null
+  }
+
+  # A path as a literal Vitest glob.
+  let globEscape(file: String!): String! {
+    ["*", "?", "[", "]", "{", "}", "(", ")", "!", "+", "@"].reduce(
+      file.replace("\\", "\\\\"),
+    ) { escaped, char =>
+      escaped.replace(char, "\\" + char)
+    }
+  }
+
+  # Test files are found by glob with Vitest's default include,
+  # **/*.{test,spec}.?(c|m)[jt]s?(x), so listing runs no container. The
+  # project's own include setting is not read. node_modules, .git and nested
+  # projects are left out; the order is byte order, so keys are stable.
+  let testFiles(ws: Workspace!): [String!]! {
+    let prefix = if (path == ".") { "" } else { path + "/" }
+    let nested = tool
+      .projectRoots(ws, if (path == ".") { "/" } else { "/" + path })
+      .filter { root => root != path }
+    let empty: [String!]! = []
+    let found = ["test", "spec"]
+      .reduce(empty) { acc, kind => acc + ws.glob(prefix + "**/*." + kind + ".*") }
+      .filter { file => file.hasSuffix("/") == false }
+      .map { file => file.trimPrefix("/").trimPrefix("./") }
+      .filter { file => file.match(`\.(test|spec)\.[cm]?[jt]sx?$`) != null }
+      .filter { file => nested.any { root => file.hasPrefix(root + "/") } == false }
+      .map { file => file.trimPrefix(prefix) }
+      .filter { file =>
+        file.split("/").any { segment => segment == "node_modules" or segment == ".git" } == false
+      }
+    tool.sorted(found.uniq)
+  }
+}
+
+"""
+Test files in a Vitest project, keyed by project-relative path.
+"""
+type VitestTestFiles @collection {
+  """
+  Test file paths, relative to the project root.
+  """
+  files: [String!]! @keys
+
+  """
+  Test files selected in or out since the collection was discovered.
+  """
+  delta: CollectionDelta
+
+  let project: VitestProject!
+
+  """
+  The test file at this project-relative path.
+  """
+  file(path: String!): VitestTestFile! @get {
+    VitestTestFile(path: path, project: project)
+  }
+
+  """
+  Run the selected test files in this project.
+  """
+  test(ws: Workspace!): Void @check {
+    # With nothing selected out, run the project as a whole with its own
+    # Vitest config rather than naming every file. Without a delta, the
+    # explicit list is the safe choice.
+    let whole = if (delta == null) {
+      false
+    } else {
+      delta.addedKeys.length == 0 and delta.removedKeys.length == 0
+    }
+    if (whole) {
+      project.test(ws)
+    } else if (files.length > 0) {
+      project.runFiles(ws, files)
+    }
+    null
+  }
+}
+
+"""
+A Vitest test file.
+"""
+type VitestTestFile {
+  """
+  Test file path, relative to the project root.
+  """
+  path: String!
+
+  let project: VitestProject!
+
+  """
+  Run this test file.
+  """
+  test(ws: Workspace!): Void @check {
+    project.runFiles(ws, [path])
   }
 }
