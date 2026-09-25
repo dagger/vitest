@@ -53,7 +53,15 @@ type Vitest {
   Vitest projects at or below the working directory, keyed by project root.
   """
   projects(ws: Workspace!): VitestProjects! {
-    VitestProjects(paths: sorted(projectRoots(ws, "")), tool: self)
+    VitestProjects(
+      paths: sorted(
+        ws
+          .findRoots(markers: configNames, exclude: ["**/node_modules/**"])
+          .map { root => workspacePath(ws, root) }
+          .uniq,
+      ),
+      tool: self,
+    )
   }
 
   """
@@ -65,18 +73,6 @@ type Vitest {
 
   let projectAt(path: String!): VitestProject! {
     VitestProject(path: path, tool: self)
-  }
-
-  # Project roots found from `start` (the cwd when empty), made
-  # workspace-root-relative. From a cwd that holds no config of its own, the
-  # nearest enclosing project is found too, as findRoots does.
-  let projectRoots(ws: Workspace!, start: String!): [String!]! {
-    let roots = if (start == "") {
-      ws.findRoots(markers: configNames, exclude: ["**/node_modules/**"])
-    } else {
-      ws.findRoots(start: start, markers: configNames, exclude: ["**/node_modules/**"])
-    }
-    roots.map { root => workspacePath(ws, root) }.uniq
   }
 
   """
@@ -327,27 +323,40 @@ type VitestProject {
     }
   }
 
-  # Test files are found by glob with Vitest's default include,
-  # **/*.{test,spec}.?(c|m)[jt]s?(x), so listing runs no container. The
-  # project's own include setting is not read. node_modules, .git and nested
-  # projects are left out; the order is byte order, so keys are stable.
+  # Test files are found by one ripgrep search over the project tree, with
+  # Vitest's default include, **/*.{test,spec}.?(c|m)[jt]s?(x), as globs, so
+  # listing runs no container. The project's own include setting is not read.
+  # node_modules and .git are pruned by the search itself. Config files come
+  # back from the same search and mark nested projects, whose files are left
+  # out. Search lists only files with content, so empty files are not keys.
+  # The order is byte order, so keys are stable.
   let testFiles(ws: Workspace!): [String!]! {
     let prefix = if (path == ".") { "" } else { path + "/" }
-    let nested = tool
-      .projectRoots(ws, if (path == ".") { "/" } else { "/" + path })
-      .filter { root => root != path }
-    let empty: [String!]! = []
-    let found = ["test", "spec"]
-      .reduce(empty) { acc, kind => acc + ws.glob(prefix + "**/*." + kind + ".*") }
-      .filter { file => file.hasSuffix("/") == false }
-      .map { file => file.trimPrefix("/").trimPrefix("./") }
-      .filter { file => file.match(`\.(test|spec)\.[cm]?[jt]sx?$`) != null }
-      .filter { file => nested.any { root => file.hasPrefix(root + "/") } == false }
-      .map { file => file.trimPrefix(prefix) }
-      .filter { file =>
-        file.split("/").any { segment => segment == "node_modules" or segment == ".git" } == false
-      }
-    tool.sorted(found.uniq)
+    let found = ws
+      .search(
+        paths: [if (path == ".") { "/" } else { "/" + path }],
+        globs: [
+          "*.{test,spec}.{js,ts,jsx,tsx,cjs,cts,mjs,mts,cjsx,ctsx,mjsx,mtsx}",
+          "{vitest,vite}.config.{ts,mts,cts,js,mjs,cjs}",
+          "!node_modules",
+          "!.git",
+        ],
+        pattern: "",
+        filesOnly: true,
+      ).{{filePath}}
+      .map { result => result.filePath.trimPrefix("/").trimPrefix("./").trimPrefix(prefix) }
+    let nested = found
+      .filter { file => isConfig(file) and file.contains("/") }
+      .map { file => file.split("/").dropLast(1).join("/") }
+    let files = found.filter { file =>
+      isConfig(file) == false and nested.any { root => file.hasPrefix(root + "/") } == false
+    }
+    tool.sorted(files.uniq)
+  }
+
+  # Whether a project-relative path names a Vitest or Vite config file.
+  let isConfig(file: String!): Boolean! {
+    tool.configNames.contains(file.split("/").takeLast(1).join(""))
   }
 }
 

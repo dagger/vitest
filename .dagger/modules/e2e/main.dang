@@ -125,6 +125,19 @@ type E2e {
   }
 
   """
+  From a subdirectory of a project, that project is selected on its own: the
+  enclosing project and no sibling or nested project elsewhere in it.
+  """
+  subdirectoryDiscoveryCheck: Void @check {
+    assertPaths(projects(project, "src/components"), ["."], "from src/components of a root project")
+    assertPaths(projects(nested, "a/src"), ["a"], "from a/src")
+    assertPaths(projects(nested, "src"), ["."], "from src of the root project")
+    assertPaths(projects(siblings, "b/src/components"), ["b"], "from b/src/components")
+
+    null
+  }
+
+  """
   A root project with a nested project under a subdirectory holding no config
   of its own:
 
@@ -227,6 +240,8 @@ type E2e {
       src/notes.test.md               (not a test file)
       nested/vitest.config.ts         (a nested project, not this one's)
       nested/src/n.test.ts
+      src/node_modules/dep/d.test.ts  (a dependency, not a test file)
+      .git/hooks/h.test.ts            (git metadata, not a test file)
   """
   let testFilesFixture: Directory! {
     project
@@ -236,11 +251,14 @@ type E2e {
       .withNewFile("src/notes.test.md", "not a test\n")
       .withNewFile("nested/vitest.config.ts", "export default {}\n")
       .withNewFile("nested/src/n.test.ts", passingTest)
+      .withNewFile("src/node_modules/dep/d.test.ts", failingTest)
+      .withNewFile(".git/hooks/h.test.ts", failingTest)
   }
 
   """
   Test files are keyed by project-relative path in byte order, leaving out
-  files outside Vitest's default include and nested projects' files. get and
+  files outside Vitest's default include, node_modules, .git and nested
+  projects' files. get and
   subset follow the keys, and a subset runs exactly its own files: filtering
   to a passing file in a project that also holds failing files passes, even
   when Vitest's substring filter would match a failing one too.
