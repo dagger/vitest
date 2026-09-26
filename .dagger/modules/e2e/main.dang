@@ -5,7 +5,7 @@ type E2e {
   """
   The git repository to run tests against as an end-to-end smoke test.
   """
-  pub repo: String! = "https://github.com/dagger/hello-dagger"
+  repo: String! = "https://github.com/dagger/hello-dagger"
 
   """
   Run the vitest toolchain against a real-world repository.
@@ -13,10 +13,10 @@ type E2e {
   This pulls the hello-dagger repo, exposes it as a Workspace, and runs
   the vitest `testAll` check against it end-to-end.
   """
-  pub testHelloDagger: Void @check {
+  testHelloDagger: Void @check {
     let ws = git(repo).head.tree.asWorkspace
 
-    vitest().testAll(ws)
+    vitest.testAll(ws)
   }
 
   """
@@ -35,9 +35,9 @@ type E2e {
       b/vitest.config.ts
   """
   let siblings: Directory! {
-    directory.
-      withDirectory("a", project).
-      withDirectory("b", project)
+    directory
+      .withDirectory("a", project)
+      .withDirectory("b", project)
   }
 
   """
@@ -48,16 +48,16 @@ type E2e {
       b/vitest.config.ts
   """
   let nested: Directory! {
-    project.
-      withDirectory("a", project).
-      withDirectory("b", project)
+    project
+      .withDirectory("a", project)
+      .withDirectory("b", project)
   }
 
   """
   Discovery from `cwd` inside a synthetic workspace built from `tree`.
   """
   let projects(tree: Directory!, cwd: String!): [String!]! {
-    vitest().projects(tree.asWorkspace(cwd: cwd))
+    vitest.projects(tree.asWorkspace(cwd: cwd))
   }
 
   """
@@ -81,7 +81,7 @@ type E2e {
   From a root holding no config, discovery returns every project beneath it;
   entering one of them scopes discovery to that project alone.
   """
-  pub siblingDiscoveryCheck: Void @check {
+  siblingDiscoveryCheck: Void @check {
     assertPaths(projects(siblings, "."), ["a", "b"], "from the workspace root")
     assertPaths(projects(siblings, "a"), ["."], "from a")
     assertPaths(projects(siblings, "b"), ["."], "from b")
@@ -93,7 +93,7 @@ type E2e {
   A root project does not leak into a nested project's view: the config in the
   cwd shadows the enclosing one, so entering `a` yields `a` alone.
   """
-  pub nestedDiscoveryCheck: Void @check {
+  nestedDiscoveryCheck: Void @check {
     assertPaths(projects(nested, "."), [".", "a", "b"], "from the workspace root")
     assertPaths(projects(nested, "a"), ["."], "from a")
     assertPaths(projects(nested, "b"), ["."], "from b")
@@ -118,10 +118,10 @@ type E2e {
   reported as a ".."-relative path alongside the projects below the cwd, and
   that path resolves back to the enclosing project through the workspace.
   """
-  pub ancestorDiscoveryCheck: Void @check {
+  ancestorDiscoveryCheck: Void @check {
     let ws = ancestor.asWorkspace(cwd: "work")
 
-    assertPaths(vitest().projects(ws), ["..", "app"], "from work")
+    assertPaths(vitest.projects(ws), ["..", "app"], "from work")
 
     if (ws.directory("..").glob("vitest.config.ts").length != 1) {
       raise "the returned ancestor path did not resolve back to the enclosing project"
@@ -139,19 +139,17 @@ type E2e {
   Whether `testAll` from `cwd` observed the failure planted in `tree`.
   """
   let testAllFailed(tree: Directory!, cwd: String!): Boolean! {
-    try {
-      vitest().testAll(tree.asWorkspace(cwd: cwd))
+    {
+      vitest.testAll(tree.asWorkspace(cwd: cwd))
       false
-    } catch {
-      err => true
-    }
+    } rescue true
   }
 
   """
   `testAll` runs every project below the cwd, and entering one of them leaves
   its siblings out of reach.
   """
-  pub descendantScopeCheck: Void @check {
+  descendantScopeCheck: Void @check {
     let broken = siblings.withNewFile("b/src/broken.test.ts", failingTest)
 
     if (testAllFailed(broken, ".") == false) {
@@ -160,7 +158,10 @@ type E2e {
     if (testAllFailed(broken, "a")) {
       raise "testAll from a should not have run the sibling project b"
     }
-    if (testAllFailed(siblings.withNewFile("a/src/broken.test.ts", failingTest), "a") == false) {
+    if (testAllFailed(
+      siblings.withNewFile("a/src/broken.test.ts", failingTest),
+      "a",
+    ) == false) {
       raise "testAll from a should have run a's own tests"
     }
 
@@ -171,7 +172,7 @@ type E2e {
   A cwd holding no config sits inside its enclosing project, so `testAll` runs
   that project too rather than only the ones below the cwd.
   """
-  pub ancestorScopeCheck: Void @check {
+  ancestorScopeCheck: Void @check {
     if (testAllFailed(ancestor.withNewFile("src/broken.test.ts", failingTest), "work") == false) {
       raise "testAll from work should have run the enclosing project"
     }
@@ -194,9 +195,9 @@ type E2e {
       b/vitest.config.ts
   """
   let sharedFixture: Directory! {
-    siblings.
-      withNewFile("fixtures/shared.json", "{\"greeting\": \"hello\"}\n").
-      withNewFile("a/src/shared.test.ts", fixtureTest)
+    siblings
+      .withNewFile("fixtures/shared.json", "{\"greeting\": \"hello\"}\n")
+      .withNewFile("a/src/shared.test.ts", fixtureTest)
   }
 
   """
@@ -204,12 +205,14 @@ type E2e {
   container; with it, the file is mounted at its workspace-relative path so the
   test's relative import resolves as it does on disk.
   """
-  pub includeExtraFilesCheck: Void @check {
+  includeExtraFilesCheck: Void @check {
     if (testAllFailed(sharedFixture, "a") == false) {
       raise "the fixture outside the project should not have been reachable by default"
     }
 
-    vitest(includeExtraFiles: ["fixtures/**"]).testAll(sharedFixture.asWorkspace(cwd: "a"))
+    vitest(includeExtraFiles: ["fixtures/**"]).testAll(
+      sharedFixture.asWorkspace(cwd: "a"),
+    )
 
     null
   }
@@ -219,8 +222,10 @@ type E2e {
   from a subdirectory of `a`, the enclosing project still reaches the shared
   fixture through `includeExtraFiles`.
   """
-  pub includeExtraFilesAncestorCheck: Void @check {
-    vitest(includeExtraFiles: ["fixtures/**"]).testAll(sharedFixture.withDirectory("a/work", directory).asWorkspace(cwd: "a/work"))
+  includeExtraFilesAncestorCheck: Void @check {
+    vitest(includeExtraFiles: ["fixtures/**"]).testAll(
+      sharedFixture.withDirectory("a/work", directory).asWorkspace(cwd: "a/work"),
+    )
 
     null
   }
@@ -235,8 +240,10 @@ type E2e {
   The tests are handed the Dagger session already running them, so an SDK
   connects to it instead of trying to provision an engine of its own.
   """
-  pub daggerSessionCheck: Void @check {
-    vitest().testAll(siblings.withNewFile("a/src/session.test.ts", sessionTest).asWorkspace(cwd: "a"))
+  daggerSessionCheck: Void @check {
+    vitest.testAll(
+      siblings.withNewFile("a/src/session.test.ts", sessionTest).asWorkspace(cwd: "a"),
+    )
 
     null
   }
