@@ -132,23 +132,31 @@ there, and Vitest runs with the project directory as its working directory, so
   do) and honours the field's version.
 - The install sees only the files it reads (every `package.json`, lockfiles,
   `pnpm-workspace.yaml`, `.npmrc`, `.yarnrc*`, `.yarn/{releases,plugins,patches}`,
-  `patches/`, and the directories of `file:`/`link:`/`portal:` dependencies
-  and injected workspace packages, which the install copies); the rest of the
-  source (minus `.gitignore`d files) is added
-  afterwards, so editing source does not re-run the install. npm, pnpm, yarn
+  `patches/`, the directories of `file:`/`link:`/`portal:` dependencies and
+  injected workspace packages, which the install copies, and the files
+  packages name as `bin`, so their commands get linked); the rest of the
+  source (minus `.gitignore`d files) is added afterwards, so editing source
+  does not re-run the install. npm, pnpm, yarn
   and bun caches and `COREPACK_HOME` are on cache volumes (the pnpm store is
   passed with `--store-dir`, which pnpm 12 requires). A `postinstall`
   that needs other source files fails at this step; pass
   `installFlags = ["--ignore-scripts"]` if the tests don't need it.
-- Browser downloads (Playwright, Puppeteer) are left on, since Vitest may run
-  browser tests; Cypress's binary download and git hook installers (husky,
-  simple-git-hooks) are switched off.
+- Browsers: Puppeteer's Chrome download on install is left on (Vitest's
+  browser mode can use it) and its directory, `~/.cache/puppeteer`, is on a
+  cache volume, so it happens once. Playwright downloads nothing on install;
+  for browser-mode tests with the Playwright provider, use a base image that
+  ships its browsers (e.g. `baseImageAddress = "mcr.microsoft.com/playwright:<version>"`)
+  or install them in your `build` script; `~/.cache/ms-playwright` is on a
+  cache volume too, so that download also happens once. Cypress's binary download and git hook installers
+  (husky, simple-git-hooks) are switched off.
 - Vitest runs from the project's own `node_modules/.bin/vitest` (looked up
   from the project to the install root, or through yarn under Plug'n'Play). A
   project with a `package.json` but no vitest installed fails with a message
   saying so; only a project with no `package.json` at all runs `npx vitest`.
 - The OpenTelemetry reporter is loaded with `NODE_OPTIONS=--import`; nothing is
-  added to your dependencies.
+  added to your dependencies. It loads what its exporter needs up front, so
+  tests that delete globals such as `ReadableStream` or `fetch` don't break
+  the export.
 
 A failure names the project and the step, with the end of its output, e.g.
 `Vitest project apps/web: install failed (pnpm install --store-dir /root/.pnpm-store, exit 1): ...` or
