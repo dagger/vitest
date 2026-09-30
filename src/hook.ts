@@ -3,6 +3,14 @@
  * This file is imported AFTER the loader is registered.
  */
 
+// The OTLP HTTP exporter imports node:http(s) lazily, on its first export.
+// Building a builtin's ESM facade reads every export it has, and http's lazy
+// WebSocket loads undici, which needs globalThis.ReadableStream. A test that
+// deletes that global (vuejs/core's webStream.spec.ts does) would then make
+// the first export after it fail with an unhandled rejection. Load them now,
+// while the globals are intact.
+import "node:http";
+import "node:https";
 import { format } from "node:util";
 import { OtelSDK } from "@dagger.io/telemetry";
 import {
