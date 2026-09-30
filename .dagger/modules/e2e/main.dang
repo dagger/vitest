@@ -372,6 +372,7 @@ type E2e {
       t/a.spec.tsx     fails
       x/t/a.spec.ts    fails
       t/env.spec.ts    passes only with DAGGER_VITEST_E2E=yes
+      t/globals.spec.ts deletes ReadableStream and fetch after each test
   """
   let projectExclude: Directory! {
     currentModule.source.directory("testdata/project-exclude")
@@ -387,7 +388,7 @@ type E2e {
 
     assertPaths(
       tests.keys,
-      ["t/a.spec.ts", "t/a.spec.tsx", "t/env.spec.ts", "x/t/a.spec.ts"],
+      ["t/a.spec.ts", "t/a.spec.tsx", "t/env.spec.ts", "t/globals.spec.ts", "x/t/a.spec.ts"],
       "test files of the project-exclude fixture",
     )
     run(tests.subset(keys: ["t/a.spec.ts"]).batch.test(ws))
@@ -395,6 +396,19 @@ type E2e {
 
     let wholeFailed = { run(tests.batch.test(ws)); false } rescue true
     assert(wholeFailed, "the whole run should have run the decoys")
+
+    null
+  }
+
+  """
+  Tests that delete web globals (ReadableStream, fetch) don't break the
+  OpenTelemetry reporter's export on the default node:25 image.
+  """
+  mutatedGlobalsCheck: Void @check {
+    let ws = projectExclude.asWorkspace
+    run(
+      vitest.projects(ws).get(key: ".").tests(ws).subset(keys: ["t/globals.spec.ts"]).batch.test(ws),
+    )
 
     null
   }
@@ -460,6 +474,7 @@ type E2e {
       packages/lib/
       packages/app/vitest.config.mjs, a.test.js
       packages/app/local-dep/ (file:./local-dep, imported by a.test.js)
+      packages/lib/cli.js     (lib's bin, spawned by packages/app/cli.test.js)
   """
   let pnpmWorkspace: Directory! {
     currentModule.source.directory("testdata/pnpm-workspace")
@@ -477,8 +492,9 @@ type E2e {
   """
   The package manager is detected from the packageManager field, installed
   through corepack on an image without it, and the install runs at the
-  workspace root, so catalog: and workspace: dependencies resolve, and a
-  file: dependency is installed with its files.
+  workspace root, so catalog: and workspace: dependencies resolve, a file:
+  dependency is installed with its files, and a workspace package's bin is
+  linked.
   An explicit packageManager still wins.
   """
   packageManagerCheck: Void @check {
@@ -486,7 +502,7 @@ type E2e {
     assertPaths(vitest.projects(ws).keys, ["packages/app"], "pnpm workspace projects")
     assertPaths(
       vitest.projects(ws).get(key: "packages/app").tests(ws).keys,
-      ["a.test.js"],
+      ["a.test.js", "cli.test.js"],
       "pnpm workspace test files",
     )
     let detected = outcome(vitest, ws, "packages/app")

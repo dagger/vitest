@@ -241,12 +241,16 @@ type Vitest {
   Everything the install reads, and nothing else, so editing source files
   does not re-run it. Directories the package manager copies at install time
   (file:, link: and portal: dependencies, injected workspace packages) are
-  included whole; if they cannot be worked out, the whole source is.
+  included whole, and the files packages name as `bin`, so their commands get
+  linked; if they cannot be worked out, the whole source is.
   """
   let installInputs(ws: Workspace!, root: String!): Directory! {
     let none: [String!]! = []
     let copied = {
-      copiedDirs(ws, root).reduce(none) { acc, dir => acc + [dir, dir + "/**"] }
+      copiedDirs(ws, root).reduce(none) { acc, dir => acc + [dir, dir + "/**"] } + binFiles(
+        ws,
+        root,
+      )
     } rescue {
       err: Error => ["**"]
     }
@@ -284,15 +288,7 @@ type Vitest {
   """
   let copiedDirs(ws: Workspace!, root: String!): [String!]! {
     let none: [String!]! = []
-    let manifests = ws
-      .search(
-        paths: ["/" + join(root, "")],
-        globs: ["package.json", "!node_modules", "!.git"],
-        pattern: "",
-        filesOnly: true,
-      ).{{filePath}}
-      .map { result => result.filePath.trimPrefix("/").trimPrefix("./") }
-      .map { file => if (root == ".") { file } else { file.trimPrefix(root + "/") } }
+    let manifests = manifestFiles(ws, root)
     let local = manifests.reduce(none) { acc, file =>
       let dir = file.split("/").dropLast(1).join("/")
       acc + manifestText(ws, root, file).matchAll(`"(?:file|link|portal):([^"]+)"`).map { m =>
@@ -317,6 +313,41 @@ type Vitest {
     (local + injectedDirs)
       .filter { dir => dir != "" and dir != "." and dir != ".." and dir.hasPrefix("../") == false }
       .uniq
+  }
+
+  """
+  Files under root, relative to it, that package.json files name as `bin`,
+  as a string or as an object of commands.
+  """
+  let binFiles(ws: Workspace!, root: String!): [String!]! {
+    let none: [String!]! = []
+    manifestFiles(ws, root)
+      .reduce(none) { acc, file =>
+        let dir = file.split("/").dropLast(1).join("/")
+        let text = manifestText(ws, root, file)
+        let single = text.matchAll(`"bin"\s*:\s*"([^"]+)"`).map { m => m.captures.join("") }
+        let named = text.matchAll(`"bin"\s*:\s*\{([^}]*)\}`).reduce(none) { found, m =>
+          found + m.captures.join("").matchAll(`:\s*"([^"]+)"`).map { v => v.captures.join("") }
+        }
+        acc + (single + named).map { bin => resolvePath(dir, bin) }
+      }
+      .filter { file => file != "" and file != ".." and file.hasPrefix("../") == false }
+      .uniq
+  }
+
+  """
+  Every package.json under root except in node_modules, relative to root.
+  """
+  let manifestFiles(ws: Workspace!, root: String!): [String!]! {
+    ws
+      .search(
+        paths: ["/" + join(root, "")],
+        globs: ["package.json", "!node_modules", "!.git"],
+        pattern: "",
+        filesOnly: true,
+      ).{{filePath}}
+      .map { result => result.filePath.trimPrefix("/").trimPrefix("./") }
+      .map { file => if (root == ".") { file } else { file.trimPrefix(root + "/") } }
   }
 
   let manifestText(ws: Workspace!, root: String!, file: String!): String! {
@@ -353,9 +384,10 @@ type Vitest {
   let pnpmStore: String! = "/root/.pnpm-store"
 
   """
-  Node container with every package manager's cache on a volume and corepack
-  enabled for pnpm and yarn. Browser downloads stay on, since Vitest may run
-  browser tests; Cypress's binary and git hooks are switched off.
+  Node container with every package manager's cache and the browser download
+  directories on volumes, and corepack enabled for pnpm and yarn. Browser
+  downloads stay on, since Vitest's browser mode may use them; Cypress's
+  binary and git hooks are switched off.
   """
   let nodeBase(pm: String!): Container! {
     let base = container
@@ -370,6 +402,10 @@ type Vitest {
       .withEnvVariable("COREPACK_HOME", "/root/.corepack")
       .withEnvVariable("COREPACK_ENABLE_DOWNLOAD_PROMPT", "0")
       .withEnvVariable("CI", "true")
+      # Browsers a dependency downloads while installing (Puppeteer's Chrome)
+      # or later (Playwright's) are kept on cache volumes.
+      .withMountedCache("/root/.cache/puppeteer", cacheVolume("puppeteer-browsers"))
+      .withMountedCache("/root/.cache/ms-playwright", cacheVolume("playwright-browsers"))
       .withEnvVariable("CYPRESS_INSTALL_BINARY", "0")
       .withEnvVariable("HUSKY", "0")
       .withEnvVariable("SKIP_INSTALL_SIMPLE_GIT_HOOKS", "1")
