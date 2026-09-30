@@ -364,6 +364,183 @@ type E2e {
   }
 
   """
+  A Vitest 4 project whose config defines an inline project with its own
+  `exclude`, which overrides the CLI's --exclude, next to decoys a Vitest
+  filter for t/a.spec.ts would also match:
+
+      t/a.spec.ts      passes
+      t/a.spec.tsx     fails
+      x/t/a.spec.ts    fails
+      t/env.spec.ts    passes only with DAGGER_VITEST_E2E=yes
+  """
+  let projectExclude: Directory! {
+    currentModule.source.directory("testdata/project-exclude")
+  }
+
+  """
+  A selection runs exactly its files even when the project's config defines
+  its own `exclude` and other test files contain the selected path.
+  """
+  exactSelectionCheck: Void @check {
+    let ws = projectExclude.asWorkspace
+    let tests = vitest.projects(ws).get(key: ".").tests(ws)
+
+    assertPaths(
+      tests.keys,
+      ["t/a.spec.ts", "t/a.spec.tsx", "t/env.spec.ts", "x/t/a.spec.ts"],
+      "test files of the project-exclude fixture",
+    )
+    run(tests.subset(keys: ["t/a.spec.ts"]).batch.test(ws))
+    run(tests.get(key: "t/a.spec.ts").test(ws))
+
+    let wholeFailed = { run(tests.batch.test(ws)); false } rescue true
+    assert(wholeFailed, "the whole run should have run the decoys")
+
+    null
+  }
+
+  """
+  The `environment` setting reaches the tests.
+  """
+  environmentCheck: Void @check {
+    let ws = projectExclude.asWorkspace
+    let one = "t/env.spec.ts"
+
+    let failed = {
+      run(vitest.projects(ws).get(key: ".").tests(ws).get(key: one).test(ws))
+      false
+    } rescue true
+    assert(failed, "the env test passed without the variable")
+    run(
+      vitest(environment: ["DAGGER_VITEST_E2E=yes"]).projects(ws).get(key: ".").tests(ws).get(key: one).test(ws),
+    )
+
+    null
+  }
+
+  """
+  `list` prints the project's test files, passes the `flags` setting, and
+  fails when Vitest reports errors instead of printing nothing.
+  """
+  listCheck: Void @check {
+    let ws = projectExclude.asWorkspace
+    let listed = vitest.projects(ws).get(key: ".").list(ws) ?? ""
+    assert(listed.contains("t/a.spec.ts"), "list did not print the test files: " + listed)
+
+    let badFlag = {
+      vitest(flags: ["--no-such-flag"]).projects(ws).get(key: ".").list(ws)
+      "listed"
+    } rescue {
+      err: Error => "failed"
+    }
+    assert(badFlag == "failed", "list ignored the flags setting")
+
+    let broken = projectExclude
+      .withNewFile("t/broken.spec.ts", "import { test } from 'vitest'\nthrow new Error('broken at collection')\ntest('never', () => {})\n")
+      .asWorkspace
+    let brokenList = {
+      vitest.projects(broken).get(key: ".").list(broken)
+      "listed"
+    } rescue {
+      err: Error => err.message
+    }
+    assert(brokenList.contains("vitest list failed"), "list hid a collection error: " + brokenList)
+
+    null
+  }
+
+  """
+  A pnpm workspace with a catalog and a workspace dependency, whose root
+  postinstall fails when DAGGER_VITEST_FAIL_POSTINSTALL is set:
+
+      pnpm-workspace.yaml     catalog: vitest
+      package.json            packageManager: pnpm@10.25.0
+      pnpm-lock.yaml
+      packages/lib/
+      packages/app/vitest.config.mjs, a.test.js
+  """
+  let pnpmWorkspace: Directory! {
+    currentModule.source.directory("testdata/pnpm-workspace")
+  }
+
+  """
+  Why running a project failed, or "passed".
+  """
+  let outcome(tool: Vitest!, ws: Workspace!, path: String!): String! {
+    { tool.projects(ws).get(key: path).test(ws); "passed" } rescue {
+      err: Error => err.message
+    }
+  }
+
+  """
+  The package manager is detected from the packageManager field, installed
+  through corepack on an image without it, and the install runs at the
+  workspace root, so catalog: and workspace: dependencies resolve.
+  An explicit packageManager still wins.
+  """
+  packageManagerCheck: Void @check {
+    let ws = pnpmWorkspace.asWorkspace
+    assertPaths(vitest.projects(ws).keys, ["packages/app"], "pnpm workspace projects")
+    assertPaths(
+      vitest.projects(ws).get(key: "packages/app").tests(ws).keys,
+      ["a.test.js"],
+      "pnpm workspace test files",
+    )
+    let detected = outcome(vitest, ws, "packages/app")
+    assert(detected == "passed", "the detected pnpm install failed: " + detected)
+
+    # npm does not read pnpm-workspace.yaml, so the root install leaves the
+    # app without vitest: proof that the explicit setting was used.
+    let forced = outcome(vitest(packageManager: "npm"), ws, "packages/app")
+    assert(
+      forced.contains("Vitest project packages/app: vitest is not installed"),
+      "an explicit packageManager did not win: " + forced,
+    )
+
+    null
+  }
+
+  """
+  `environment` reaches the install and `installFlags` are appended to it.
+  """
+  installFlagsCheck: Void @check {
+    let ws = pnpmWorkspace.asWorkspace
+    let failing = outcome(
+      vitest(environment: ["DAGGER_VITEST_FAIL_POSTINSTALL=1"]),
+      ws,
+      "packages/app",
+    )
+    assert(
+      failing.contains("Vitest project packages/app: install failed (pnpm install"),
+      "a failing install was not named: " + failing,
+    )
+    let skipped = outcome(
+      vitest(environment: ["DAGGER_VITEST_FAIL_POSTINSTALL=1"], installFlags: ["--ignore-scripts"]),
+      ws,
+      "packages/app",
+    )
+    assert(skipped == "passed", "installFlags did not reach the install: " + skipped)
+
+    null
+  }
+
+  """
+  A project that does not depend on vitest fails clearly instead of running
+  whatever vitest npx would download.
+  """
+  missingVitestCheck: Void @check {
+    let ws = directory
+      .withNewFile("package.json", "{\"name\": \"no-vitest\", \"private\": true}\n")
+      .withNewFile("vitest.config.mjs", "export default {}\n")
+      .withNewFile("a.test.mjs", passingTest)
+      .asWorkspace
+    let missing = outcome(vitest, ws, ".")
+    assert(missing.contains("vitest is not installed"), "a missing vitest was not reported: " + missing)
+
+    null
+  }
+
+  """
   A test in project `a` reading a fixture at the workspace root by a relative
   path that escapes the project directory.
   """

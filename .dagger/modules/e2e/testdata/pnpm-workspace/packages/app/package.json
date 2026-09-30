@@ -1,0 +1,7 @@
+{
+  "name": "app",
+  "private": true,
+  "type": "module",
+  "dependencies": { "lib": "workspace:*" },
+  "devDependencies": { "vitest": "catalog:" }
+}

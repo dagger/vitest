@@ -8,9 +8,11 @@ type Vitest {
   baseImageAddress: String! = "node:25-alpine"
 
   """
-  The package manager to use.
+  Package manager that installs dependencies: npm, yarn, pnpm or bun. Empty
+  detects it from package.json's packageManager field, else the lockfile,
+  else npm.
   """
-  packageManager: String! = "npm"
+  packageManager: String! = ""
 
   """
   Extra workspace-root include patterns mounted alongside the project directory,
@@ -29,6 +31,16 @@ type Vitest {
   Flags to pass to every vitest run.
   """
   flags: [String!]! = []
+
+  """
+  Flags appended to the install command, e.g. ["--ignore-scripts"].
+  """
+  installFlags: [String!]! = []
+
+  """
+  Environment variables for the install and the tests, as KEY=VALUE.
+  """
+  environment: [String!]! = []
 
   """
   Filenames that mark a Vitest project: Vitest reads its own `vitest.config.*`
@@ -98,90 +110,384 @@ type Vitest {
     }
   }
 
+  let lockfiles: [String!]! = [
+    "pnpm-lock.yaml",
+    "yarn.lock",
+    "package-lock.json",
+    "npm-shrinkwrap.json",
+    "bun.lock",
+    "bun.lockb",
+  ]
+
   """
-  Runtime container for executing the tests of a project
+  Where a project's dependencies are installed: the nearest workspace root at
+  or above it (pnpm-workspace.yaml, or a package.json with "workspaces"),
+  else the nearest lockfile's directory, else the nearest package.json's.
+  Null when there is no package.json at or above the project.
   """
-  let base(ws: Workspace!, project: VitestProject!): Container! {
-    # set cache variables for all supported package managers
+  let installRoot(ws: Workspace!, dir: String!): String {
+    let from = "/" + join(dir, "")
+    if (ws.findUp("package.json", from) == null) {
+      null
+    } else {
+      let workspaceRoot = nearest([dirOf(ws.findUp("pnpm-workspace.yaml", from)), workspacesRoot(ws, from)])
+      let lockRoot = nearest(
+        lockfiles.map { name => dirOf(ws.findUp(name, from)) },
+      )
+      workspaceRoot ?? lockRoot ?? dirOf(ws.findUp("package.json", from))
+    }
+  }
+
+  """
+  The nearest directory at or above from whose package.json declares
+  "workspaces", or null.
+  """
+  let workspacesRoot(ws: Workspace!, from: String!): String {
+    let found = ws.findUp("package.json", from)
+    if (found == null) {
+      null
+    } else {
+      let dir = dirOf(found) ?? "."
+      if (ws.file(found ?? "").contents.contains("\"workspaces\"")) {
+        dir
+      } else if (dir == ".") {
+        null
+      } else {
+        workspacesRoot(ws, "/" + (dirOf("/" + dir) ?? "."))
+      }
+    }
+  }
+
+  """
+  Directory of a workspace path returned by findUp, or null.
+  """
+  let dirOf(found: String): String {
+    if (found == null) {
+      null
+    } else {
+      let p = (found ?? "").split("/").dropLast(1).join("/").trimPrefix("/").trimSuffix("/")
+      if (p == "") { "." } else { p }
+    }
+  }
+
+  """
+  The deepest, so nearest, of the given directories on one path, or null.
+  """
+  let nearest(dirs: [String]!): String {
+    let none: String = null
+    dirs.reduce(none) { best, dir =>
+      if (dir == null) {
+        best
+      } else if (best == null) {
+        dir
+      } else if (depth(dir ?? ".") > depth(best ?? ".")) {
+        dir
+      } else {
+        best
+      }
+    }
+  }
+
+  let depth(dir: String!): Int! {
+    if (dir == ".") { 0 } else { dir.split("/").length }
+  }
+
+  """
+  Workspace-root path of name inside dir; dir itself when name is empty.
+  """
+  let join(dir: String!, name: String!): String! {
+    if (dir == ".") { name } else if (name == "") { dir } else { dir + "/" + name }
+  }
+
+  let containerPath(dir: String!): String! {
+    if (dir == ".") { "/src" } else { "/src/" + dir }
+  }
+
+  """
+  The configured package manager, else the one root's package.json names in
+  "packageManager", else the one its lockfile belongs to, else npm.
+  """
+  let packageManagerFor(ws: Workspace!, root: String!): String! {
+    if (packageManager != "") {
+      packageManager
+    } else {
+      let text = { ws.file("/" + join(root, "package.json")).contents } rescue {
+        err: Error => ""
+      }
+      let declared = if (text.contains("\"packageManager\"")) {
+        text.replaceMatches(`(?s)^.*"packageManager"\s*:\s*"([a-zA-Z]+)@.*$`, with: "$1")
+      } else {
+        ""
+      }
+      if (["npm", "pnpm", "yarn", "bun"].contains(declared)) {
+        declared
+      } else if (has(ws, root, "pnpm-lock.yaml") or has(ws, root, "pnpm-workspace.yaml")) {
+        "pnpm"
+      } else if (has(ws, root, "yarn.lock")) {
+        "yarn"
+      } else if (has(ws, root, "bun.lock") or has(ws, root, "bun.lockb")) {
+        "bun"
+      } else {
+        "npm"
+      }
+    }
+  }
+
+  let has(ws: Workspace!, dir: String!, name: String!): Boolean! {
+    ws.findUp(name, "/" + join(dir, "")) == "/" + join(dir, name)
+  }
+
+  """
+  Everything the install reads, and nothing else, so editing source files
+  does not re-run it.
+  """
+  let installInputs(ws: Workspace!, root: String!): Directory! {
+    ws.directory(
+      "/" + join(root, ""),
+      include: [
+        "**/package.json",
+        "pnpm-lock.yaml",
+        "pnpm-workspace.yaml",
+        ".pnpmfile.cjs",
+        "yarn.lock",
+        ".yarnrc",
+        ".yarnrc.yml",
+        ".yarn/releases/**",
+        ".yarn/plugins/**",
+        ".yarn/patches/**",
+        "package-lock.json",
+        "npm-shrinkwrap.json",
+        "bun.lock",
+        "bun.lockb",
+        "bunfig.toml",
+        "**/.npmrc",
+        "patches/**",
+      ],
+      exclude: ["**/node_modules"],
+    )
+  }
+
+  let installCommand(ws: Workspace!, root: String!): [String!]! {
+    [packageManagerFor(ws, root), "install"] + installFlags
+  }
+
+  """
+  Node container with every package manager's cache on a volume and corepack
+  enabled for pnpm and yarn. Browser downloads stay on, since Vitest may run
+  browser tests; Cypress's binary and git hooks are switched off.
+  """
+  let nodeBase(pm: String!): Container! {
     let base = container
       .from(baseImageAddress)
-      .withMountedCache("/root/.packages", cacheVolume("node-toolchain-packages"))
-      .withEnvVariable("npm_config_cache", "/root/.packages")
-      .withEnvVariable("YARN_CACHE_FOLDER", "/root/.packages")
-      .withEnvVariable("PNPM_HOME", "/root/.packages")
-      .withEnvVariable("BUN_INSTALL_CACHE_DIR", "/root/.packages")
-
-    if (packageManager == "pnpm" and baseImageAddress.contains("node:")) {
-      base = base.withExec(["corepack", "enable"])
-    }
-
-    let workdir = if (project.path == ".") { "/src" } else { "/src/" + project.path }
-
-    base
-      .withDirectory("/src", tree(ws, project))
-      .withWorkdir(workdir)
+      .withMountedCache("/root/.npm", cacheVolume("npm-cache"))
+      .withEnvVariable("npm_config_cache", "/root/.npm")
+      .withMountedCache("/root/.yarn-cache", cacheVolume("yarn-cache"))
+      .withEnvVariable("YARN_CACHE_FOLDER", "/root/.yarn-cache")
+      .withMountedCache("/root/.bun-cache", cacheVolume("bun-cache"))
+      .withEnvVariable("BUN_INSTALL_CACHE_DIR", "/root/.bun-cache")
+      .withMountedCache("/root/.corepack", cacheVolume("corepack"))
+      .withEnvVariable("COREPACK_HOME", "/root/.corepack")
+      .withEnvVariable("COREPACK_ENABLE_DOWNLOAD_PROMPT", "0")
       .withEnvVariable("CI", "true")
-      .withExec([packageManager, "install"])
+      .withEnvVariable("CYPRESS_INSTALL_BINARY", "0")
+      .withEnvVariable("HUSKY", "0")
+      .withEnvVariable("SKIP_INSTALL_SIMPLE_GIT_HOOKS", "1")
+    let ctr = if (pm == "pnpm" or pm == "yarn") {
+      # Images from node 25 on no longer ship corepack, and --force replaces
+      # the yarn they still ship.
+      let withStore = if (pm == "pnpm") {
+        base
+          .withMountedCache("/root/.pnpm-store", cacheVolume("pnpm-store"))
+          .withEnvVariable("npm_config_store_dir", "/root/.pnpm-store")
+      } else {
+        base
+      }
+      withStore.withExec([
+        "sh",
+        "-c",
+        "command -v corepack >/dev/null 2>&1 || npm install -g --force corepack; corepack enable",
+      ])
+    } else if (pm == "bun") {
+      base.withExec(["sh", "-c", "command -v bun >/dev/null 2>&1 || npm install -g bun"])
+    } else {
+      base
+    }
+    environment.reduce(ctr) { acc, pair =>
+      let key = pair.replaceMatches(`(?s)=.*$`, with: "")
+      acc.withEnvVariable(key, pair.trimPrefix(key + "="))
+    }
   }
 
   """
-  The tree mounted for a project: the project at its workspace-relative path,
-  plus any includeExtraFiles at theirs
+  The install root with its dependencies installed. The install may have
+  failed: read exitCode.
   """
-  let tree(ws: Workspace!, project: VitestProject!): Directory! {
-    let tree = directory.withDirectory(project.path, project.source(ws))
+  let installed(ws: Workspace!, root: String!): Container! {
+    nodeBase(packageManagerFor(ws, root))
+      .withDirectory(containerPath(root), installInputs(ws, root))
+      .withWorkdir(containerPath(root))
+      .withExec(installCommand(ws, root), expect: ReturnType.ANY)
+  }
 
-    if (includeExtraFiles.length > 0) {
-      tree = tree.withDirectory(
-        ".",
+  """
+  Why installing a project's dependencies failed, with the end of its
+  output, or null.
+  """
+  let installFailure(ws: Workspace!, project: VitestProject!): String {
+    let root = installRoot(ws, project.path)
+    if (root == null) {
+      null
+    } else {
+      let ran = installed(ws, root ?? ".")
+      let code = ran.exitCode
+      if (code == 0) {
+        null
+      } else {
+        "install failed (" + installCommand(ws, root ?? ".").join(" ") + ", exit " + toString(code) + "):\n"
+          + lastLines(ran, 15)
+      }
+    }
+  }
+
+  let lastLines(ran: Container!, count: Int!): String! {
+    (ran.stdout.trim(" \n") + "\n" + ran.stderr.trim(" \n")).trim(" \n").split("\n").takeLast(count).join("\n")
+  }
+
+  """
+  A vitest command that runs the nearest node_modules/.bin/vitest between the
+  working directory and the install root, or yarn's under Plug'n'Play, and
+  says how to fix it when there is none.
+  """
+  let wrapper(root: String!): String! {
+    let top = containerPath(root)
+    "#!/bin/sh\n"
+      + "d=\"$PWD\"\n"
+      + "while :; do\n"
+      + "  if [ -x \"$d/node_modules/.bin/vitest\" ]; then exec \"$d/node_modules/.bin/vitest\" \"$@\"; fi\n"
+      + "  if [ \"$d\" = "
+      + top
+      + " ] || [ \"$d\" = / ]; then break; fi\n"
+      + "  d=$(dirname \"$d\")\n"
+      + "done\n"
+      + "if [ -f "
+      + top
+      + "/.pnp.cjs ]; then exec yarn vitest \"$@\"; fi\n"
+      + "echo \"vitest is not installed: add it to the devDependencies of "
+      + join(root, "package.json")
+      + " (or of a package.json between it and the project)\" >&2\n"
+      + "exit 127\n"
+  }
+
+  """
+  Container that runs Vitest, with the project as the working directory. With
+  a package.json at or above the project, the install root's dependencies are
+  installed and the source laid over them; otherwise npx fetches Vitest on
+  demand. The install must have succeeded: see installFailure.
+  """
+  let runner(ws: Workspace!, project: VitestProject!): Container! {
+    let root = installRoot(ws, project.path)
+    let mount = root ?? project.path
+    let source = ws.directory(
+      "/" + join(mount, ""),
+      exclude: ["**/node_modules", ".git"],
+      gitignore: true,
+    )
+    let ctr = if (root == null) {
+      nodeBase("npm").withDirectory(containerPath(mount), source)
+    } else {
+      installed(ws, root ?? ".")
+        .withDirectory(containerPath(mount), source)
+        # 493 is 0755.
+        .withNewFile("/usr/local/bin/vitest", wrapper(root ?? "."), permissions: 493)
+    }
+    let extra = if (includeExtraFiles.length > 0) {
+      ctr.withDirectory(
+        "/src",
         ws.directory("/", include: includeExtraFiles, exclude: ["**/node_modules"]),
       )
+    } else {
+      ctr
     }
-
-    tree
+    let workdir = extra.withWorkdir(containerPath(project.path))
+    if (build) {
+      workdir.withExec([packageManagerFor(ws, mount), "run", "build"], expect: ReturnType.ANY)
+    } else {
+      workdir
+    }
   }
 
   """
-  Run vitest in a project with the given extra arguments
+  The vitest command: npx without a package.json, otherwise the wrapper the
+  runner installs, which runs the project's own vitest.
   """
-  let runVitest(ws: Workspace!, project: VitestProject!, args: [String!]!): Container! {
-    let runtime = base(ws, project)
+  let vitestCommand(ws: Workspace!, project: VitestProject!): [String!]! {
+    if (installRoot(ws, project.path) == null) { ["npx", "--yes", "vitest"] } else { ["vitest"] }
+  }
 
-    # optionally build first
-    if (build) {
-      runtime = runtime.withExec([packageManager, "run", "build"])
+  """
+  Why a finished step failed, naming it, or null.
+  """
+  let stepFailure(ran: Container!, step: String!): String {
+    let code = ran.exitCode
+    if (code == 0) {
+      null
+    } else if (code == 127) {
+      ran.stderr.trim(" \n")
+    } else {
+      step + " failed (exit " + toString(code) + "):\n" + lastLines(ran, 15)
     }
+  }
 
-    # install the local build of the otel library
-    let installLibrary = [packageManager, "install", "-D", "/vitest", "--install-links"]
-    # yarn uses add instead of install
-    if (packageManager == "yarn") {
-      installLibrary = [packageManager, "add", "--dev", "/vitest"]
+  """
+  Run vitest in a project with the given extra arguments, after removing the
+  given project-relative files. Returns why it failed, naming the step, or
+  null. It never raises, so a batch reports every project.
+  """
+  let vitestFailure(
+    ws: Workspace!,
+    project: VitestProject!,
+    args: [String!]!,
+    remove: [String!]!,
+  ): String {
+    {
+      let install = installFailure(ws, project)
+      let ctr = runner(ws, project)
+      let built = if (install != null or build == false) { null } else {
+        stepFailure(
+          ctr,
+          "build",
+        )
+      }
+      if (install != null) {
+        install
+      } else if (built != null) {
+        built
+      } else {
+        let prefix = containerPath(project.path) + "/"
+        let ran = ctr
+          .withoutFiles(remove.map { file => prefix + file })
+          .withMountedDirectory("/vitest", buildLibrary)
+          .withEnvVariable(
+            "NODE_OPTIONS",
+            "$NODE_OPTIONS --import /vitest/dist/esm/register.mjs",
+            expand: true,
+          )
+          .withEnvVariable("DAGGER_VITEST_CACHE_BUSTER", UUID.v7)
+          # Nested so that tests using a Dagger SDK connect to the session
+          # already running them, rather than failing while provisioning an
+          # engine of their own. Nested clients get no host access (that stays
+          # scoped to the main client), so this hands the tests nothing they
+          # could not already reach.
+          .withExec(
+            vitestCommand(ws, project) + flags + args,
+            experimentalPrivilegedNesting: true,
+            expect: ReturnType.ANY,
+          )
+        stepFailure(ran, "vitest")
+      }
+    } rescue {
+      err: Error => err.message
     }
-
-    # pnpm needs -w
-    if (packageManager == "pnpm") {
-      installLibrary = [packageManager, "install", "-w", "-D", "/vitest", "--no-link-workspace-packages"]
-    }
-
-    # Install vitest library
-    runtime = runtime
-      .withMountedDirectory("/vitest", buildLibrary)
-      .withExec(installLibrary)
-
-    # mount and install the otel library and then execute the tests
-    runtime
-      .withEnvVariable(
-        "NODE_OPTIONS",
-        "$NODE_OPTIONS --import /vitest/dist/esm/register.mjs",
-        expand: true,
-      )
-      .withEnvVariable("DAGGER_VITEST_CACHE_BUSTER", UUID.v7)
-      # Nested so that tests using a Dagger SDK connect to the session already
-      # running them, rather than failing while provisioning an engine of their
-      # own. Nested clients get no host access (that stays scoped to the main
-      # client), so this hands the tests nothing they could not already reach.
-      .withExec(["npx", "vitest"] + flags + args, experimentalPrivilegedNesting: true)
   }
 
   """
@@ -265,7 +571,10 @@ type VitestProject {
   Run this project's tests.
   """
   test(ws: Workspace!): Void {
-    tool.runVitest(ws, self, []).sync
+    let failure = testFailure(ws)
+    if (failure != null) {
+      raise "Vitest project " + path + ": " + (failure ?? "")
+    }
     null
   }
 
@@ -273,7 +582,24 @@ type VitestProject {
   List this project's tests.
   """
   list(ws: Workspace!): String {
-    tool.base(ws, self).withExec(["npx", "vitest", "list"]).stdout
+    let install = tool.installFailure(ws, self)
+    if (install != null) {
+      raise "Vitest project " + path + ": " + (install ?? "")
+    }
+    let listed = tool
+      .runner(ws, self)
+      .withEnvVariable("DAGGER_VITEST_CACHE_BUSTER", UUID.v7)
+      .withExec(tool.vitestCommand(ws, self) + ["list"] + tool.flags, expect: ReturnType.ANY)
+    # Vitest can report collection errors on stderr and still exit 0.
+    let failure = if (listed.exitCode == 0 and listed.stderr.toLower.contains("unhandled error")) {
+      "vitest list failed (unhandled errors):\n" + tool.lastLines(listed, 15)
+    } else {
+      tool.stepFailure(listed, "vitest list")
+    }
+    if (failure != null) {
+      raise "Vitest project " + path + ": " + (failure ?? "")
+    }
+    listed.stdout
   }
 
   """
@@ -287,40 +613,31 @@ type VitestProject {
   }
 
   """
-  Error message from running this project's tests, or null when they pass.
+  Why running this project's tests failed, or null when they pass.
   """
   let testFailure(ws: Workspace!): String {
-    { test(ws); null } rescue {
-      err: Error => err.message
-    }
+    tool.vitestFailure(ws, self, [], [])
   }
 
   """
   Run exactly these project-relative test files.
   """
   let runFiles(ws: Workspace!, files: [String!]!): Void {
-    # Vitest takes file arguments as case-insensitive substring filters, so
-    # "a.test.ts" also runs "aa.test.ts" and "src/a.test.tsx". Exclude every
-    # other discovered test file a filter would pick up.
-    let filters = files.map { file => file.toLower }
-    let excludes = testFiles(ws).filter { other =>
-      files.contains(other) == false
-        and filters.any { filter => other.toLower.contains(filter) }
+    # Vitest takes file arguments as case-insensitive substring filters,
+    # matched against paths relative to each Vitest project's root, so
+    # "src/a.test.ts" also runs "src/a.test.tsx" and "lib/src/a.test.ts".
+    # A project's own `exclude` overrides --exclude, so instead every other
+    # discovered test file that shares a selected file's name is removed from
+    # the container before the run.
+    let names = files.map { file => file.split("/").takeLast(1).join("").toLower }
+    let decoys = testFiles(ws).filter { other =>
+      files.contains(other) == false and names.any { name => other.toLower.contains(name) }
     }
-    let args = excludes.reduce(files) { acc, other =>
-      acc + ["--exclude", globEscape(other)]
+    let failure = tool.vitestFailure(ws, self, files, decoys)
+    if (failure != null) {
+      raise "Vitest project " + path + ": " + (failure ?? "")
     }
-    tool.runVitest(ws, self, args).sync
     null
-  }
-
-  # A path as a literal Vitest glob.
-  let globEscape(file: String!): String! {
-    ["*", "?", "[", "]", "{", "}", "(", ")", "!", "+", "@"].reduce(
-      file.replace("\\", "\\\\"),
-    ) { escaped, char =>
-      escaped.replace(char, "\\" + char)
-    }
   }
 
   # Test files are found by one ripgrep search over the project tree, with
