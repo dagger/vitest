@@ -134,7 +134,8 @@ there, and Vitest runs with the project directory as its working directory, so
   `pnpm-workspace.yaml`, `.npmrc`, `.yarnrc*`, `.yarn/{releases,plugins,patches}`,
   `patches/`); the rest of the source (minus `.gitignore`d files) is added
   afterwards, so editing source does not re-run the install. npm, pnpm, yarn
-  and bun caches and `COREPACK_HOME` are on cache volumes. A `postinstall`
+  and bun caches and `COREPACK_HOME` are on cache volumes (the pnpm store is
+  passed with `--store-dir`, which pnpm 12 requires). A `postinstall`
   that needs other source files fails at this step; pass
   `installFlags = ["--ignore-scripts"]` if the tests don't need it.
 - Browser downloads (Playwright, Puppeteer) are left on, since Vitest may run
@@ -148,13 +149,14 @@ there, and Vitest runs with the project directory as its working directory, so
   added to your dependencies.
 
 A failure names the project and the step, with the end of its output, e.g.
-`Vitest project apps/web: install failed (pnpm install, exit 1): ...` or
+`Vitest project apps/web: install failed (pnpm install --store-dir /root/.pnpm-store, exit 1): ...` or
 `Vitest project apps/web: vitest failed (exit 1): ...`.
 
 #### Settings
 
 Settings live in the workspace `dagger.toml`, or can be set with
-`dagger settings vitest <name> <value>`:
+`dagger settings vitest <name> <value>` and removed with
+`dagger settings -u vitest <name>`:
 
 ```toml
 [modules.vitest.settings]
@@ -208,6 +210,9 @@ when Vitest reports collection errors) and `source(ws)`. From the CLI:
 ```bash
 dagger call vitest project --path=apps/web list
 ```
+
+To run tests, use `dagger check` (in CI too): `dagger call` on a check
+function does not fail the command when the check fails.
 
 #### Files outside the project
 
