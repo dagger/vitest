@@ -450,14 +450,16 @@ type E2e {
   }
 
   """
-  A pnpm workspace with a catalog and a workspace dependency, whose root
-  postinstall fails when DAGGER_VITEST_FAIL_POSTINSTALL is set:
+  A pnpm 12 workspace with a catalog, a workspace dependency and a file:
+  dependency (which pnpm copies at install time), whose root postinstall
+  fails when DAGGER_VITEST_FAIL_POSTINSTALL is set:
 
       pnpm-workspace.yaml     catalog: vitest
-      package.json            packageManager: pnpm@10.25.0
+      package.json            packageManager: pnpm@12.8.1
       pnpm-lock.yaml
       packages/lib/
       packages/app/vitest.config.mjs, a.test.js
+      packages/app/local-dep/ (file:./local-dep, imported by a.test.js)
   """
   let pnpmWorkspace: Directory! {
     currentModule.source.directory("testdata/pnpm-workspace")
@@ -475,7 +477,8 @@ type E2e {
   """
   The package manager is detected from the packageManager field, installed
   through corepack on an image without it, and the install runs at the
-  workspace root, so catalog: and workspace: dependencies resolve.
+  workspace root, so catalog: and workspace: dependencies resolve, and a
+  file: dependency is installed with its files.
   An explicit packageManager still wins.
   """
   packageManagerCheck: Void @check {

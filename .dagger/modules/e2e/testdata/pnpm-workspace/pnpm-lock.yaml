@@ -177,6 +177,9 @@ importers:
       lib:
         specifier: workspace:*
         version: link:../lib
+      local-dep:
+        specifier: file:./local-dep
+        version: file:packages/app/local-dep
     devDependencies:
       vitest:
         specifier: 'catalog:'
@@ -444,6 +447,9 @@ packages:
   lightningcss@1.33.0:
     resolution: {integrity: sha512-WkUDrojuJs0xkgGf2udWxa3yGBRxPtxUkB79i6aCZLRgc7PM8fZe9TosfPDcvEpQZbuFASnHYmRLBLUbmLOIIA==}
     engines: {node: '>= 12.0.0'}
+
+  local-dep@file:packages/app/local-dep:
+    resolution: {directory: packages/app/local-dep, type: directory}
 
   magic-string@0.30.21:
     resolution: {integrity: sha512-vd2F4YUyEXKGcLHoq+TEyCjxueSeHnFxyyjNp80yg0XV4vUhnDer/lvvlqM/arB5bXQN5K2/3oinyCRyx8T2CQ==}
@@ -769,6 +775,8 @@ snapshots:
       lightningcss-linux-x64-musl: 1.33.0
       lightningcss-win32-arm64-msvc: 1.33.0
       lightningcss-win32-x64-msvc: 1.33.0
+
+  local-dep@file:packages/app/local-dep: {}
 
   magic-string@0.30.21:
     dependencies:

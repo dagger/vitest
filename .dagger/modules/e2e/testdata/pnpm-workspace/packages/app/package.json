@@ -2,6 +2,11 @@
   "name": "app",
   "private": true,
   "type": "module",
-  "dependencies": { "lib": "workspace:*" },
-  "devDependencies": { "vitest": "catalog:" }
+  "dependencies": {
+    "lib": "workspace:*",
+    "local-dep": "file:./local-dep"
+  },
+  "devDependencies": {
+    "vitest": "catalog:"
+  }
 }

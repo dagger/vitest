@@ -239,9 +239,17 @@ type Vitest {
 
   """
   Everything the install reads, and nothing else, so editing source files
-  does not re-run it.
+  does not re-run it. Directories the package manager copies at install time
+  (file:, link: and portal: dependencies, injected workspace packages) are
+  included whole; if they cannot be worked out, the whole source is.
   """
   let installInputs(ws: Workspace!, root: String!): Directory! {
+    let none: [String!]! = []
+    let copied = {
+      copiedDirs(ws, root).reduce(none) { acc, dir => acc + [dir, dir + "/**"] }
+    } rescue {
+      err: Error => ["**"]
+    }
     ws.directory(
       "/" + join(root, ""),
       include: [
@@ -262,9 +270,75 @@ type Vitest {
         "bunfig.toml",
         "**/.npmrc",
         "patches/**",
-      ],
+      ] + copied,
       exclude: ["**/node_modules"],
     )
+  }
+
+  """
+  Directories under root, relative to it, whose contents the install copies:
+  every file:, link: or portal: dependency named in a package.json (in any
+  dependency field, overrides or resolutions), and every workspace package
+  marked injected in dependenciesMeta. Paths leaving root are skipped: they
+  are not mounted at all.
+  """
+  let copiedDirs(ws: Workspace!, root: String!): [String!]! {
+    let none: [String!]! = []
+    let manifests = ws
+      .search(
+        paths: ["/" + join(root, "")],
+        globs: ["package.json", "!node_modules", "!.git"],
+        pattern: "",
+        filesOnly: true,
+      ).{{filePath}}
+      .map { result => result.filePath.trimPrefix("/").trimPrefix("./") }
+      .map { file => if (root == ".") { file } else { file.trimPrefix(root + "/") } }
+    let local = manifests.reduce(none) { acc, file =>
+      let dir = file.split("/").dropLast(1).join("/")
+      acc + manifestText(ws, root, file).matchAll(`"(?:file|link|portal):([^"]+)"`).map { m =>
+        resolvePath(dir, m.captures.join(""))
+      }
+    }
+    let injected = manifests.reduce(none) { acc, file =>
+      acc + manifestText(ws, root, file)
+        .matchAll(`"([^"]+)"\s*:\s*\{\s*"injected"\s*:\s*true`)
+        .map { m => m.captures.join("") }
+    }
+    let injectedDirs = if (injected.length == 0) {
+      none
+    } else {
+      manifests
+        .filter { file =>
+          let text = manifestText(ws, root, file)
+          injected.any { name => text.contains("\"name\": \"" + name + "\"") or text.contains("\"name\":\"" + name + "\"") }
+        }
+        .map { file => file.split("/").dropLast(1).join("/") }
+    }
+    (local + injectedDirs)
+      .filter { dir => dir != "" and dir != "." and dir != ".." and dir.hasPrefix("../") == false }
+      .uniq
+  }
+
+  let manifestText(ws: Workspace!, root: String!, file: String!): String! {
+    ws.file("/" + join(root, file)).contents
+  }
+
+  """
+  A path relative to dir, normalized; "" for dir itself, and "../..." when
+  it leaves the root.
+  """
+  let resolvePath(dir: String!, rel: String!): String! {
+    let none: [String!]! = []
+    let segments = (dir.split("/") + rel.split("/")).filter { s => s != "" and s != "." }
+    segments
+      .reduce(none) { acc, seg =>
+        if (seg == ".." and acc.length > 0 and acc.takeLast(1).join("") != "..") {
+          acc.dropLast(1)
+        } else {
+          acc + [seg]
+        }
+      }
+      .join("/")
   }
 
   let installCommand(ws: Workspace!, root: String!): [String!]! {
