@@ -1,7 +1,7 @@
 {
   "name": "root",
   "private": true,
-  "packageManager": "pnpm@10.25.0",
+  "packageManager": "pnpm@12.8.1",
   "scripts": {
     "postinstall": "node -e \"process.exit(process.env.DAGGER_VITEST_FAIL_POSTINSTALL ? 3 : 0)\""
   }

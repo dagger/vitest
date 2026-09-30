@@ -268,8 +268,15 @@ type Vitest {
   }
 
   let installCommand(ws: Workspace!, root: String!): [String!]! {
-    [packageManagerFor(ws, root), "install"] + installFlags
+    let pm = packageManagerFor(ws, root)
+    # pnpm 12 ignores npm_config_store_dir, and npm warns about it, so the
+    # store is named on the command line.
+    let none: [String!]! = []
+    let store = if (pm == "pnpm") { ["--store-dir", pnpmStore] } else { none }
+    [pm, "install"] + store + installFlags
   }
+
+  let pnpmStore: String! = "/root/.pnpm-store"
 
   """
   Node container with every package manager's cache on a volume and corepack
@@ -297,8 +304,7 @@ type Vitest {
       # the yarn they still ship.
       let withStore = if (pm == "pnpm") {
         base
-          .withMountedCache("/root/.pnpm-store", cacheVolume("pnpm-store"))
-          .withEnvVariable("npm_config_store_dir", "/root/.pnpm-store")
+          .withMountedCache(pnpmStore, cacheVolume("pnpm-store"))
       } else {
         base
       }
