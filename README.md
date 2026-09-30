@@ -6,8 +6,7 @@ Vitest reporter with OpenTelemetry support for auto-instrumentation with Dagger.
 
 ### With Dagger
 
-Requires Dagger engine `v1.0.0-beta.15` or later. That release is not out yet,
-so for now this module only loads on a development engine.
+Requires Dagger v1.0.0-beta.15 or later.
 
 ```bash
 dagger install github.com/dagger/vitest
@@ -29,6 +28,9 @@ dagger check -l --all
 # every project's tests
 dagger check --vitest
 
+# the test check by name (the same thing, alongside other modules' test checks)
+dagger check --check test
+
 # one project
 dagger check --vitest-project=apps/web
 
@@ -45,15 +47,31 @@ dagger list vitest-test-files -a --vitest-project=apps/web
 | Flag | Selects |
 |---|---|
 | `--vitest` | every check of this module |
+| `--check test` | checks named `test`, in every installed module |
 | `--vitest-project=PATH` | a project, by workspace-root-relative root (repeatable) |
+| `--vitest-projects` | every project |
 | `--vitest-test-file=PATH` | a test file, by project-relative path (repeatable) |
+| `--vitest-tests` | every test file |
 
 The key flags are named after the item types, `VitestProject` and
 `VitestTestFile`; `dagger check --help` lists the flags in effect.
 
 When none of a project's test files is selected out, the project runs as a
-plain `npx vitest`, so Vitest's own config decides what runs. Otherwise the
-selected files are passed to Vitest by path.
+plain `vitest`, so Vitest's own config decides what runs. Otherwise only the
+selected files run: they are passed to Vitest by path, and because Vitest
+matches file arguments as substrings (so `src/a.test.ts` would also run
+`src/a.test.tsx` or `lib/src/a.test.ts`), every other discovered test file with
+the same file name is removed from the container first. This holds whatever
+`include`/`exclude` the Vitest config or its inline projects set.
+
+If the Vitest config defines projects you don't want to run in a container,
+such as browser or e2e projects, name the ones to run with Vitest's `--project`
+flag:
+
+```toml
+[modules.vitest.settings]
+flags = ["--project", "unit*"]
+```
 
 #### Running from a subdirectory
 
@@ -79,7 +97,7 @@ project at the root.
 A project is any directory holding a `vitest.config.*` or `vite.config.*`
 file, found with `Workspace.findRoots` (`node_modules` excluded). A project
 inside another one is a project of its own. Note that a whole run of the outer
-project is a plain `npx vitest` there, which also picks up the inner project's
+project is a plain `vitest` there, which also picks up the inner project's
 files unless the outer config excludes them.
 
 Test files are keyed by their path relative to the project root. They are
@@ -97,12 +115,41 @@ not read your Vitest config, so:
   from the API to run it.
 - Empty files are not listed.
 
-Vitest treats file arguments as substring filters, so asking it for
-`src/a.test.ts` would also run `src/a.test.tsx` or `lib/src/a.test.ts`. To run
-exactly the selection, every other discovered test file whose path contains a
-selected path is passed to `--exclude`. Vitest 1.x accepts a single `--exclude`
-only, so there a selection that needs more than one fails; Vitest 2 and later
-have no such limit.
+#### Installing dependencies
+
+Each project is installed from its install root: the nearest enclosing
+workspace root (a directory with `pnpm-workspace.yaml`, or a `package.json`
+with `"workspaces"`), else the nearest directory with a lockfile, else the
+nearest `package.json`. That directory is mounted, dependencies are installed
+there, and Vitest runs with the project directory as its working directory, so
+`workspace:` and `catalog:` dependencies resolve.
+
+- The package manager comes from the install root's `package.json`
+  `"packageManager"` field, else its lockfile (`pnpm-lock.yaml` or
+  `pnpm-workspace.yaml`, `yarn.lock`, `bun.lock`/`bun.lockb`, otherwise npm),
+  unless the `packageManager` setting names one. pnpm and yarn run through
+  corepack, which is installed when the image lacks it (as `node:25` images
+  do) and honours the field's version.
+- The install sees only the files it reads (every `package.json`, lockfiles,
+  `pnpm-workspace.yaml`, `.npmrc`, `.yarnrc*`, `.yarn/{releases,plugins,patches}`,
+  `patches/`); the rest of the source (minus `.gitignore`d files) is added
+  afterwards, so editing source does not re-run the install. npm, pnpm, yarn
+  and bun caches and `COREPACK_HOME` are on cache volumes. A `postinstall`
+  that needs other source files fails at this step; pass
+  `installFlags = ["--ignore-scripts"]` if the tests don't need it.
+- Browser downloads (Playwright, Puppeteer) are left on, since Vitest may run
+  browser tests; Cypress's binary download and git hook installers (husky,
+  simple-git-hooks) are switched off.
+- Vitest runs from the project's own `node_modules/.bin/vitest` (looked up
+  from the project to the install root, or through yarn under Plug'n'Play). A
+  project with a `package.json` but no vitest installed fails with a message
+  saying so; only a project with no `package.json` at all runs `npx vitest`.
+- The OpenTelemetry reporter is loaded with `NODE_OPTIONS=--import`; nothing is
+  added to your dependencies.
+
+A failure names the project and the step, with the end of its output, e.g.
+`Vitest project apps/web: install failed (pnpm install, exit 1): ...` or
+`Vitest project apps/web: vitest failed (exit 1): ...`.
 
 #### Settings
 
@@ -111,15 +158,19 @@ Settings live in the workspace `dagger.toml`, or can be set with
 
 ```toml
 [modules.vitest.settings]
+# The package manager: npm, pnpm, yarn or bun. Default: "" (detect).
+packageManager = "pnpm"
+# Flags appended to the install command. Default: [].
+installFlags = ["--ignore-scripts"]
+# Environment variables for the install and the tests, as KEY=VALUE. Default: [].
+environment = ["TZ=UTC", "NODE_ENV=test"]
 # Run the package manager's build script before the tests. Default: false.
 build = true
-# Flags to pass to every vitest run. Default: [].
+# Flags to pass to every vitest run, and to `list`. Default: [].
 flags = ["--reporter=verbose"]
 # The base image. Default: "node:25-alpine".
 baseImageAddress = "node:25-alpine"
-# The package manager: npm, yarn or pnpm. Default: "npm".
-packageManager = "npm"
-# Extra files mounted next to the project (see below). Default: [].
+# Extra workspace files mounted at their paths (see below). Default: [].
 includeExtraFiles = []
 ```
 
@@ -151,16 +202,20 @@ testWeb(ws: Workspace!): Void @check {
 ```
 
 `vitest.project(ws, path)` looks a project up by its root, relative to the
-workspace cwd. A project also has `list(ws)` (`vitest list` output) and
-`source(ws)`.
+workspace cwd. A project also has `list(ws)` (`vitest list` output, failing
+when Vitest reports collection errors) and `source(ws)`. From the CLI:
+
+```bash
+dagger call vitest project --path=apps/web list
+```
 
 #### Files outside the project
 
-Only the project directory is mounted into the test container. When a test
-reads a file that lives outside it — typically a fixture shared with code
+Only the project's install root is mounted into the test container. When a
+test reads a file that lives outside it — typically a fixture shared with code
 elsewhere in a monorepo — list workspace-root patterns in `includeExtraFiles`.
-They are mounted at their workspace-relative paths alongside the project, so
-relative imports that escape the project directory resolve as they do on disk:
+They are mounted at their workspace-relative paths, so relative imports that
+escape the install root resolve as they do on disk:
 
 ```toml
 [modules.vitest.settings]
