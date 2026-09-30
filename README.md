@@ -132,7 +132,9 @@ there, and Vitest runs with the project directory as its working directory, so
   do) and honours the field's version.
 - The install sees only the files it reads (every `package.json`, lockfiles,
   `pnpm-workspace.yaml`, `.npmrc`, `.yarnrc*`, `.yarn/{releases,plugins,patches}`,
-  `patches/`); the rest of the source (minus `.gitignore`d files) is added
+  `patches/`, and the directories of `file:`/`link:`/`portal:` dependencies
+  and injected workspace packages, which the install copies); the rest of the
+  source (minus `.gitignore`d files) is added
   afterwards, so editing source does not re-run the install. npm, pnpm, yarn
   and bun caches and `COREPACK_HOME` are on cache volumes (the pnpm store is
   passed with `--store-dir`, which pnpm 12 requires). A `postinstall`
