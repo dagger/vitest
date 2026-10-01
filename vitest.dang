@@ -515,7 +515,9 @@ type Vitest {
       installed(ws, root ?? ".")
         .withDirectory(containerPath(mount), source)
         # 493 is 0755.
-        .withNewFile("/usr/local/bin/vitest", wrapper(root ?? "."), permissions: 493)
+        # Off PATH, so npx or a package manager can never resolve vitest to
+        # the wrapper itself; always called by absolute path.
+        .withNewFile(wrapperPath, wrapper(root ?? "."), permissions: 493)
     }
     let extra = if (includeExtraFiles.length > 0) {
       ctr.withDirectory(
@@ -533,12 +535,14 @@ type Vitest {
     }
   }
 
+  let wrapperPath: String! = "/opt/dagger-vitest/vitest"
+
   """
   The vitest command: npx without a package.json, otherwise the wrapper the
   runner installs, which runs the project's own vitest.
   """
   let vitestCommand(ws: Workspace!, project: VitestProject!): [String!]! {
-    if (installRoot(ws, project.path) == null) { ["npx", "--yes", "vitest"] } else { ["vitest"] }
+    if (installRoot(ws, project.path) == null) { ["npx", "--yes", "vitest"] } else { [wrapperPath] }
   }
 
   """

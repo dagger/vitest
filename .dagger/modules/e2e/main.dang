@@ -544,6 +544,20 @@ type E2e {
   }
 
   """
+  A project with no package.json at all runs vitest through npx.
+  """
+  noPackageJsonCheck: Void @check {
+    let ws = directory
+      .withNewFile("vitest.config.mjs", "export default { test: { globals: true } }\n")
+      .withNewFile("a.test.mjs", "test('no package.json', () => { expect(1).toBe(1) })\n")
+      .asWorkspace
+    let outcomeNoPackage = outcome(vitest, ws, ".")
+    assert(outcomeNoPackage == "passed", "a project without package.json did not run: " + outcomeNoPackage)
+
+    null
+  }
+
+  """
   A project that does not depend on vitest fails clearly instead of running
   whatever vitest npx would download.
   """
