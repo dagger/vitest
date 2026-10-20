@@ -596,6 +596,12 @@ type Vitest {
             expand: true,
           )
           .withEnvVariable("DAGGER_VITEST_CACHE_BUSTER", UUID.v7)
+          # With its own session a client provisions through a CLI rather than
+          # the session env, and the SDKs look one up in
+          # _EXPERIMENTAL_DAGGER_CLI_BIN, not on PATH. The engine already mounts
+          # a version-matched one here and puts it on PATH, so point at that
+          # instead of downloading a second copy.
+          .withEnvVariable("_EXPERIMENTAL_DAGGER_CLI_BIN", "/dev/.dagger/dagger")
           # Nested so that tests using a Dagger SDK connect to the session
           # already running them, rather than failing while provisioning an
           # engine of their own. Nested clients get no host access (that stays
