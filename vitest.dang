@@ -525,7 +525,13 @@ type Vitest {
     } else {
       ctr
     }
-    let workdir = extra.withWorkdir(containerPath(project.path))
+    # A test that uses a Dagger SDK opens a session from inside this container,
+    # and a session finds its workspace root by walking up to a .git directory.
+    # Without one the nested session gets an empty workspace — no root, no config
+    # file — so every workspace-relative API fails, including the serveModule a
+    # generated module client calls before its first query.
+    let rooted = extra.withDirectory("/src", ws.directory("/", include: [".git/**"]))
+    let workdir = rooted.withWorkdir(containerPath(project.path))
     if (build) {
       workdir.withExec([packageManagerFor(ws, mount), "run", "build"], expect: ReturnType.ANY)
     } else {
@@ -597,7 +603,7 @@ type Vitest {
           # could not already reach.
           .withExec(
             vitestCommand(ws, project) + flags + args,
-            experimentalPrivilegedNesting: true,
+            daggerInDaggerNewSession: true,
             expect: ReturnType.ANY,
           )
         stepFailure(ran, "vitest")
