@@ -530,7 +530,13 @@ type Vitest {
     # Without one the nested session gets an empty workspace — no root, no config
     # file — so every workspace-relative API fails, including the serveModule a
     # generated module client calls before its first query.
-    let rooted = extra.withDirectory("/src", ws.directory("/", include: [".git/**"]))
+    #
+    # The marker only has to exist, so synthesize an empty one at the workspace
+    # root rather than uploading the real git directory. That also covers a
+    # workspace built from a Directory, which has no .git to mount. A real one
+    # mounted through includeExtraFiles still wins: merging an empty directory
+    # over it changes nothing. Tests that read git history need that setting.
+    let rooted = extra.withDirectory("/src/.git", directory)
     let workdir = rooted.withWorkdir(containerPath(project.path))
     if (build) {
       workdir.withExec([packageManagerFor(ws, mount), "run", "build"], expect: ReturnType.ANY)
