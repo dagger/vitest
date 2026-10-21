@@ -525,7 +525,19 @@ type Vitest {
     } else {
       ctr
     }
-    let workdir = extra.withWorkdir(containerPath(project.path))
+    # A test that uses a Dagger SDK opens a session from inside this container,
+    # and a session finds its workspace root by walking up to a .git directory.
+    # Without one the nested session gets an empty workspace — no root, no config
+    # file — so every workspace-relative API fails, including the serveModule a
+    # generated module client calls before its first query.
+    #
+    # The marker only has to exist, so synthesize an empty one at the workspace
+    # root rather than uploading the real git directory. That also covers a
+    # workspace built from a Directory, which has no .git to mount. A real one
+    # mounted through includeExtraFiles still wins: merging an empty directory
+    # over it changes nothing. Tests that read git history need that setting.
+    let rooted = extra.withDirectory("/src/.git", directory)
+    let workdir = rooted.withWorkdir(containerPath(project.path))
     if (build) {
       workdir.withExec([packageManagerFor(ws, mount), "run", "build"], expect: ReturnType.ANY)
     } else {
@@ -590,6 +602,18 @@ type Vitest {
             expand: true,
           )
           .withEnvVariable("DAGGER_VITEST_CACHE_BUSTER", UUID.v7)
+          # With its own session a client provisions through a CLI rather than
+          # the session environment. The engine mounts a version-matched one
+          # here and puts it on PATH, and a TypeScript client built on SDK
+          # v1.0.4 or later finds it there by itself.
+          #
+          # Compatibility shim: an older client only looks at this variable, and
+          # fails with "Cannot read properties of undefined (reading 'port')"
+          # without it. A client ships its own bundle, so its SDK version is
+          # independent of the engine's. Drop this once pre-v1.0.4 clients are
+          # out of support; for a newer one it names the binary PATH would
+          # have found anyway.
+          .withEnvVariable("_EXPERIMENTAL_DAGGER_CLI_BIN", "/dev/.dagger/dagger")
           # Nested so that tests using a Dagger SDK connect to the session
           # already running them, rather than failing while provisioning an
           # engine of their own. Nested clients get no host access (that stays
@@ -597,7 +621,7 @@ type Vitest {
           # could not already reach.
           .withExec(
             vitestCommand(ws, project) + flags + args,
-            experimentalPrivilegedNesting: true,
+            daggerInDaggerNewSession: true,
             expect: ReturnType.ANY,
           )
         stepFailure(ran, "vitest")

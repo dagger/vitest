@@ -615,14 +615,16 @@ type E2e {
   }
 
   """
-  A test asserting it can see the Dagger session running it, through the two
-  environment variables an SDK reads to connect instead of provisioning.
+  A test asserting it can reach the engine and its workspace: the address an
+  SDK connects to, the CLI it opens a session with, and the workspace root a
+  module client resolves its address against.
   """
-  let sessionTest: String! = "import { expect, test } from 'vitest'\ntest('dagger session', () => {\n  expect(process.env.DAGGER_SESSION_PORT).toBeDefined()\n  expect(process.env.DAGGER_SESSION_TOKEN).toBeDefined()\n})\n"
+  let sessionTest: String! = "import { execFileSync } from 'node:child_process'\nimport { existsSync } from 'node:fs'\nimport { expect, test } from 'vitest'\ntest('dagger session', () => {\n  expect(process.env.DAGGER_ENGINE).toBeDefined()\n  const cli = process.env._EXPERIMENTAL_DAGGER_CLI_BIN ?? ''\n  expect(existsSync(cli)).toBe(true)\n  expect(execFileSync(cli, ['workspace', 'root']).toString().trim()).toBe('/src')\n})\n"
 
   """
-  The tests are handed the Dagger session already running them, so an SDK
-  connects to it instead of trying to provision an engine of its own.
+  The tests reach the engine running them, with their own session and a
+  workspace, so an SDK works without provisioning an engine of its own and a
+  module client can serve its module.
   """
   daggerSessionCheck: Void @check {
     let ws = siblings.withNewFile("a/src/session.test.ts", sessionTest).asWorkspace(cwd: "a")

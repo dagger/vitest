@@ -241,9 +241,8 @@ or `dagger settings vitest includeExtraFiles '["testdata/**", "schema/*.json"]'`
 
 #### Tests that call Dagger
 
-Tests are run with access to the Dagger session running them, so a test using a
-Dagger SDK connects to that session rather than provisioning an engine of its
-own:
+Tests are run with access to the engine running them, so a test using a Dagger
+SDK reaches that engine rather than provisioning one of its own:
 
 ```ts
 import { connection, dag } from "@dagger.io/dagger"
@@ -254,6 +253,25 @@ test("builds", async () => {
   })
 })
 ```
+
+Each connection opens its own session rather than joining the one running
+Vitest, and the workspace's `.git` is mounted, so a test sees the same workspace
+it would on your machine. That is what lets a **generated module client** work:
+
+```ts
+import { dag } from "@dagger.io/my-module"
+
+test("the module answers", async () => {
+  await connection(async () => {
+    expect(await dag.myModule().greeting("vitest")).toBe("Hello, vitest!")
+  })
+})
+```
+
+A client serves its module by workspace address before its first query, which
+needs a workspace, which is found by walking up to a `.git` directory. Joining
+Vitest's own session instead would resolve that address against *this* module
+and fail.
 
 Such tests are usually slower than the 5s Vitest allows by default, so raise
 `testTimeout` in your Vitest config.
