@@ -140,6 +140,10 @@ generates them. Nothing lists them until you ask: `dagger check` with no test
 selected never runs `vitest list`. A config defining Vitest `projects` lists
 each file once per project that includes it, under one set of keys.
 
+`test.skip` and `test.todo` are left out of `vitest list`, so they are not
+keys and cannot be selected on their own. They are reported as skipped when
+their file runs.
+
 `vitest list` arrives in Vitest 2.1. On an older Vitest it is read as a file
 filter, so a project has no tests to select and `list(ws)` reports nothing;
 select test files instead.

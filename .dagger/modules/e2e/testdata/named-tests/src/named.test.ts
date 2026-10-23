@@ -7,3 +7,4 @@ describe('outer', () => {
 })
 test('top', () => { expect(1).toBe(1) })
 test('fails', () => { expect(1).toBe(2) })
+test.skip('is skipped', () => { expect(1).toBe(2) })

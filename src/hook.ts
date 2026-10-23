@@ -274,6 +274,10 @@ function __suiteNames(suite?: File | Suite): string[] {
   return names;
 }
 
+function __willRunTask(test: Test): boolean {
+  return test.mode === "run" || test.mode === "queued";
+}
+
 function __testCaseResultStatus(state?: string): string {
   if (state === "fail") {
     return TEST_CASE_RESULT_STATUS_VALUE_FAIL;
@@ -402,6 +406,18 @@ function addTelemetryToRunner(runner: VitestRunner): VitestRunner {
       { attributes: __testSpanAttributes(test) },
       parentCtx,
     );
+
+    // A test Vitest will not run -- test.skip, test.todo, or filtered out by
+    // --testNamePattern -- never reaches onAfterRunTask: runSuite's runTest
+    // returns right after this hook. Close its span here with the status it
+    // would have been given, or it stays open with none and is counted as a
+    // pass. The condition mirrors that early return.
+    if (!__willRunTask(test)) {
+      testSpan.setAttribute(ATTR_TEST_CASE_RESULT_STATUS, __testCaseResultStatus(test.mode));
+      testSpan.end();
+      return;
+    }
+
     const testSpanCtx = trace.setSpan(parentCtx, testSpan);
     const telemetry = { span: testSpan, ctx: testSpanCtx };
 

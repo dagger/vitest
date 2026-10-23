@@ -321,7 +321,8 @@ type E2e {
   prefixes its lines with the project name, holding named tests next to a
   decoy file a Vitest filter for src/named.test.ts would also match:
 
-      src/named.test.ts   outer > inner > adds (1+1), outer > plain, top; fails
+      src/named.test.ts   outer > inner > adds (1+1), outer > plain, top;
+                          fails; is skipped (test.skip)
       src/named.test.tsx  top, decoy only (both fail)
   """
   let namedTests: Directory! {
@@ -330,17 +331,20 @@ type E2e {
 
   """
   Tests are keyed by the full name `vitest list` prints after the file path,
-  in declaration order, without the inline project's name and without the
-  decoy file's tests. get and subset follow the keys, and a subset runs
-  exactly its own tests: a passing test of a file that also holds a failing
-  one passes, a name holding regexp characters matches itself, and a name the
-  decoy file shares does not run the decoy's.
+  in declaration order, without the inline project's name, without the decoy
+  file's tests, and without the ones Vitest will not run. get and subset
+  follow the keys, and a subset runs exactly its own tests: a passing test of
+  a file that also holds a failing one passes, a name holding regexp
+  characters matches itself, and a name the decoy file shares does not run
+  the decoy's.
   """
   testsCollectionCheck: Void @check {
     let ws = namedTests.asWorkspace
     let file = vitest.projects(ws).get(key: ".").testFiles(ws).get(key: "src/named.test.ts")
     let tests = file.tests(ws)
 
+    # `vitest list` leaves out test.skip and test.todo, so they are not keys
+    # and cannot be selected on their own.
     assertPaths(
       tests.keys,
       ["outer > inner > adds (1+1)", "outer > plain", "top", "fails"],
