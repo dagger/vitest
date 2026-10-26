@@ -29,21 +29,21 @@ type E2e {
   Run the vitest toolchain against a real-world repository.
 
   This pulls the hello-dagger repo, exposes it as a Workspace, and runs the
-  test-file batch of every discovered project end-to-end, as `dagger check`
-  does.
+  test-file batch of every discovered project end-to-end.
   """
   testHelloDagger: Void @check {
     checkAll(git(repo).head.tree.asWorkspace)
   }
 
   """
-  Run the test-file batch of every project visible from the workspace's cwd,
-  as `dagger check` does with no selection.
+  Run the test-file batch of every project visible from the workspace's cwd.
+  This is one run per project, where `dagger check` runs each file on its own
+  through the tests collection; both see the same projects and files.
   """
   let checkAll(ws: Workspace!): Void {
     let projects = vitest.projects(ws)
     projects.keys.each { path =>
-      run(projects.get(key: path).tests(ws).batch.test(ws))
+      projects.get(key: path).testFiles(ws).batch.test(ws)
     }
     null
   }
@@ -265,7 +265,7 @@ type E2e {
   """
   testFilesCollectionCheck: Void @check {
     let ws = testFilesFixture.asWorkspace
-    let tests = vitest.projects(ws).get(key: ".").tests(ws)
+    let tests = vitest.projects(ws).get(key: ".").testFiles(ws)
 
     assertPaths(
       tests.keys,
@@ -278,22 +278,20 @@ type E2e {
       "test files of the root project",
     )
     assertPaths(
-      vitest.projects(ws).get(key: "nested").tests(ws).keys,
+      vitest.projects(ws).get(key: "nested").testFiles(ws).keys,
       ["src/n.test.ts"],
       "test files of the nested project",
     )
 
     let one = "src/a.test.ts"
     assert(tests.get(key: one).path == one, "get did not return the test file at its key")
-    run(tests.subset(keys: [one]).batch.test(ws))
-    run(tests.get(key: one).test(ws))
-    run(
-      tests.subset(keys: [one, "src/components/__tests__/HelloWorld.spec.ts"]).batch.test(ws),
-    )
+    tests.subset(keys: [one]).batch.test(ws)
+    tests.get(key: one).test(ws)
+    tests.subset(keys: [one, "src/components/__tests__/HelloWorld.spec.ts"]).batch.test(ws)
 
     let pair = tests.subset(keys: ["src/aa.test.ts", one])
     assertPaths(pair.keys, [one, "src/aa.test.ts"], "subset order")
-    let pairFailed = { run(pair.batch.test(ws)); false } rescue true
+    let pairFailed = { pair.batch.test(ws); false } rescue true
     assert(pairFailed, "a subset holding a failing file passed")
 
     let outside = { pair.get(key: "src/a.test.tsx").path } rescue {
@@ -310,6 +308,61 @@ type E2e {
       err: Error => "rejected"
     }
     assert(duplicate == "rejected", "subset accepted a duplicate key")
+
+    let none = tests.subset(keys: [])
+    assert(none.keys.length == 0, "empty subset kept keys: " + none.keys.join(", "))
+    none.batch.test(ws)
+
+    null
+  }
+
+  """
+  A Vitest 4 project whose config defines an inline project, so `vitest list`
+  prefixes its lines with the project name, holding named tests next to a
+  decoy file a Vitest filter for src/named.test.ts would also match:
+
+      src/named.test.ts   outer > inner > adds (1+1), outer > plain, top;
+                          fails; is skipped (test.skip)
+      src/named.test.tsx  top, decoy only (both fail)
+  """
+  let namedTests: Directory! {
+    currentModule.source.directory("testdata/named-tests")
+  }
+
+  """
+  Tests are keyed by the full name `vitest list` prints after the file path,
+  in declaration order, without the inline project's name, without the decoy
+  file's tests, and without the ones Vitest will not run. get and subset
+  follow the keys, and a subset runs exactly its own tests: a passing test of
+  a file that also holds a failing one passes, a name holding regexp
+  characters matches itself, and a name the decoy file shares does not run
+  the decoy's.
+  """
+  testsCollectionCheck: Void @check {
+    let ws = namedTests.asWorkspace
+    let file = vitest.projects(ws).get(key: ".").testFiles(ws).get(key: "src/named.test.ts")
+    let tests = file.tests(ws)
+
+    # `vitest list` leaves out test.skip and test.todo, so they are not keys
+    # and cannot be selected on their own.
+    assertPaths(
+      tests.keys,
+      ["outer > inner > adds (1+1)", "outer > plain", "top", "fails"],
+      "tests of src/named.test.ts",
+    )
+
+    let one = "outer > inner > adds (1+1)"
+    assert(tests.get(key: one).name == one, "get did not return the test at its key")
+    run(tests.subset(keys: [one]).batch.test(ws))
+    run(tests.get(key: one).test(ws))
+    run(tests.subset(keys: [one, "top"]).batch.test(ws))
+    run(tests.subset(keys: ["top"]).batch.test(ws))
+
+    let withFailing = { run(tests.subset(keys: [one, "fails"]).batch.test(ws)); false } rescue true
+    assert(withFailing, "a subset holding a failing test passed")
+
+    let wholeFailed = { run(tests.batch.test(ws)); false } rescue true
+    assert(wholeFailed, "the unfiltered batch did not run the whole file")
 
     let none = tests.subset(keys: [])
     assert(none.keys.length == 0, "empty subset kept keys: " + none.keys.join(", "))
@@ -343,13 +396,13 @@ type E2e {
   """
   wholeVersusFilteredCheck: Void @check {
     let ws = configIncludeFixture.asWorkspace
-    let tests = vitest.projects(ws).get(key: ".").tests(ws)
+    let tests = vitest.projects(ws).get(key: ".").testFiles(ws)
 
     assert(
       tests.keys.contains("checks/fails.ts") == false,
       "static discovery read the config's include",
     )
-    let wholeFailed = { run(tests.batch.test(ws)); false } rescue true
+    let wholeFailed = { tests.batch.test(ws); false } rescue true
     assert(wholeFailed, "the unfiltered batch did not run the project as a whole")
 
     let projectFailed = {
@@ -358,7 +411,7 @@ type E2e {
     } rescue true
     assert(projectFailed, "the project's own test did not run the project as a whole")
 
-    run(tests.subset(keys: ["src/a.test.ts"]).batch.test(ws))
+    tests.subset(keys: ["src/a.test.ts"]).batch.test(ws)
 
     null
   }
@@ -384,17 +437,17 @@ type E2e {
   """
   exactSelectionCheck: Void @check {
     let ws = projectExclude.asWorkspace
-    let tests = vitest.projects(ws).get(key: ".").tests(ws)
+    let tests = vitest.projects(ws).get(key: ".").testFiles(ws)
 
     assertPaths(
       tests.keys,
       ["t/a.spec.ts", "t/a.spec.tsx", "t/env.spec.ts", "t/globals.spec.ts", "x/t/a.spec.ts"],
       "test files of the project-exclude fixture",
     )
-    run(tests.subset(keys: ["t/a.spec.ts"]).batch.test(ws))
-    run(tests.get(key: "t/a.spec.ts").test(ws))
+    tests.subset(keys: ["t/a.spec.ts"]).batch.test(ws)
+    tests.get(key: "t/a.spec.ts").test(ws)
 
-    let wholeFailed = { run(tests.batch.test(ws)); false } rescue true
+    let wholeFailed = { tests.batch.test(ws); false } rescue true
     assert(wholeFailed, "the whole run should have run the decoys")
 
     null
@@ -406,9 +459,7 @@ type E2e {
   """
   mutatedGlobalsCheck: Void @check {
     let ws = projectExclude.asWorkspace
-    run(
-      vitest.projects(ws).get(key: ".").tests(ws).subset(keys: ["t/globals.spec.ts"]).batch.test(ws),
-    )
+    vitest.projects(ws).get(key: ".").testFiles(ws).subset(keys: ["t/globals.spec.ts"]).batch.test(ws)
 
     null
   }
@@ -421,13 +472,11 @@ type E2e {
     let one = "t/env.spec.ts"
 
     let failed = {
-      run(vitest.projects(ws).get(key: ".").tests(ws).get(key: one).test(ws))
+      vitest.projects(ws).get(key: ".").testFiles(ws).get(key: one).test(ws)
       false
     } rescue true
     assert(failed, "the env test passed without the variable")
-    run(
-      vitest(environment: ["DAGGER_VITEST_E2E=yes"]).projects(ws).get(key: ".").tests(ws).get(key: one).test(ws),
-    )
+    vitest(environment: ["DAGGER_VITEST_E2E=yes"]).projects(ws).get(key: ".").testFiles(ws).get(key: one).test(ws)
 
     null
   }
@@ -501,7 +550,7 @@ type E2e {
     let ws = pnpmWorkspace.asWorkspace
     assertPaths(vitest.projects(ws).keys, ["packages/app"], "pnpm workspace projects")
     assertPaths(
-      vitest.projects(ws).get(key: "packages/app").tests(ws).keys,
+      vitest.projects(ws).get(key: "packages/app").testFiles(ws).keys,
       ["a.test.js", "cli.test.js"],
       "pnpm workspace test files",
     )
@@ -592,9 +641,9 @@ type E2e {
     )
 
     let ws = sharedFixture.asWorkspace(cwd: "a")
-    let tests = vitest(includeExtraFiles: ["fixtures/**"]).projects(ws).get(key: "a").tests(ws)
-    run(tests.batch.test(ws))
-    run(tests.subset(keys: ["src/shared.test.ts"]).batch.test(ws))
+    let tests = vitest(includeExtraFiles: ["fixtures/**"]).projects(ws).get(key: "a").testFiles(ws)
+    tests.batch.test(ws)
+    tests.subset(keys: ["src/shared.test.ts"]).batch.test(ws)
 
     null
   }
@@ -609,7 +658,7 @@ type E2e {
     let tool = vitest(includeExtraFiles: ["fixtures/**"])
 
     assertPaths(tool.projects(ws).keys, ["a"], "from a/work")
-    run(tool.projects(ws).get(key: "a").tests(ws).batch.test(ws))
+    tool.projects(ws).get(key: "a").testFiles(ws).batch.test(ws)
 
     null
   }
@@ -628,9 +677,9 @@ type E2e {
   """
   daggerSessionCheck: Void @check {
     let ws = siblings.withNewFile("a/src/session.test.ts", sessionTest).asWorkspace(cwd: "a")
-    let tests = vitest.projects(ws).get(key: "a").tests(ws)
+    let tests = vitest.projects(ws).get(key: "a").testFiles(ws)
 
-    run(tests.subset(keys: ["src/session.test.ts"]).batch.test(ws))
+    tests.subset(keys: ["src/session.test.ts"]).batch.test(ws)
 
     null
   }
@@ -643,11 +692,9 @@ type E2e {
     let ws = project.asWorkspace
     let one = "src/components/__tests__/HelloWorld.spec.ts"
 
-    run(vitest.projects(ws).get(key: ".").tests(ws).get(key: one).test(ws))
+    vitest.projects(ws).get(key: ".").testFiles(ws).get(key: one).test(ws)
     let failed = {
-      run(
-        vitest(flags: ["--no-such-flag"]).projects(ws).get(key: ".").tests(ws).get(key: one).test(ws),
-      )
+      vitest(flags: ["--no-such-flag"]).projects(ws).get(key: ".").testFiles(ws).get(key: one).test(ws)
       false
     } rescue true
     assert(failed, "the flags setting did not reach vitest")

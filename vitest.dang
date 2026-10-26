@@ -704,8 +704,8 @@ type VitestProject {
   """
   Test files in this project, keyed by project-relative path.
   """
-  tests(ws: Workspace!): VitestTestFiles! {
-    VitestTestFiles(files: testFiles(ws), project: self)
+  testFiles(ws: Workspace!): VitestTestFiles! {
+    VitestTestFiles(files: filePaths(ws), project: self)
   }
 
   """
@@ -723,14 +723,47 @@ type VitestProject {
   List this project's tests.
   """
   list(ws: Workspace!): String {
+    listOutput(ws, tool.runner(ws, self).withEnvVariable("DAGGER_VITEST_CACHE_BUSTER", UUID.v7), [])
+  }
+
+  """
+  Full names of the tests in one project-relative test file, in declaration
+  order, as `vitest list` prints them after the file path.
+  """
+  let testNames(ws: Workspace!, file: String!): [String!]! {
+    # Only Vitest knows what a file holds: names can be computed, and
+    # test.each generates them, so this runs the project rather than
+    # reading the source.
+    let prefix = file + " > "
+    listOutput(ws, tool.runner(ws, self), [file])
+      .split("\n")
+      .map { line => line.trim(" \r") }
+      # A config defining Vitest projects prefixes every line with its project
+      # name, and lists a file once per project that includes it. Stripping
+      # that only when it is in the way leaves a path of its own, such as
+      # "[id]/a.test.ts", alone.
+      .map { line =>
+        if (line.hasPrefix(prefix)) { line } else { line.replaceMatches(`^\[[^\]]*\] `, with: "") }
+      }
+      .filter { line => line.hasPrefix(prefix) }
+      .map { line => line.trimPrefix(prefix) }
+      .uniq
+  }
+
+  # `vitest list` output, restricted to the given test files with their
+  # same-named decoys removed. Raises when the install or the listing fails.
+  let listOutput(ws: Workspace!, ctr: Container!, files: [String!]!): String! {
     let install = tool.installFailure(ws, self)
     if (install != null) {
       raise "Vitest project " + path + ": " + (install ?? "")
     }
-    let listed = tool
-      .runner(ws, self)
-      .withEnvVariable("DAGGER_VITEST_CACHE_BUSTER", UUID.v7)
-      .withExec(tool.vitestCommand(ws, self) + ["list"] + tool.flags, expect: ReturnType.ANY)
+    let prefix = tool.containerPath(path) + "/"
+    let listed = ctr
+      .withoutFiles(decoys(ws, files).map { file => prefix + file })
+      .withExec(
+        tool.vitestCommand(ws, self) + ["list"] + files + tool.flags,
+        expect: ReturnType.ANY,
+      )
     # Vitest can report collection errors on stderr and still exit 0.
     let failure = if (listed.exitCode == 0 and listed.stderr.toLower.contains("unhandled error")) {
       "vitest list failed (unhandled errors):\n" + tool.lastLines(listed, 15)
@@ -761,24 +794,26 @@ type VitestProject {
   }
 
   """
-  Run exactly these project-relative test files.
+  Run exactly these project-relative test files, with extra vitest arguments.
   """
-  let runFiles(ws: Workspace!, files: [String!]!): Void {
-    # Vitest takes file arguments as case-insensitive substring filters,
-    # matched against paths relative to each Vitest project's root, so
-    # "src/a.test.ts" also runs "src/a.test.tsx" and "lib/src/a.test.ts".
-    # A project's own `exclude` overrides --exclude, so instead every other
-    # discovered test file that shares a selected file's name is removed from
-    # the container before the run.
-    let names = files.map { file => file.split("/").takeLast(1).join("").toLower }
-    let decoys = testFiles(ws).filter { other =>
-      files.contains(other) == false and names.any { name => other.toLower.contains(name) }
-    }
-    let failure = tool.vitestFailure(ws, self, files, decoys)
+  let runFiles(ws: Workspace!, files: [String!]!, args: [String!]!): Void {
+    let failure = tool.vitestFailure(ws, self, files + args, decoys(ws, files))
     if (failure != null) {
       raise "Vitest project " + path + ": " + (failure ?? "")
     }
     null
+  }
+
+  # Vitest takes file arguments as case-insensitive substring filters, matched
+  # against paths relative to each Vitest project's root, so "src/a.test.ts"
+  # also selects "src/a.test.tsx" and "lib/src/a.test.ts". A project's own
+  # `exclude` overrides --exclude, so instead every other discovered test file
+  # that shares a selected file's name is removed from the container first.
+  let decoys(ws: Workspace!, files: [String!]!): [String!]! {
+    let names = files.map { file => file.split("/").takeLast(1).join("").toLower }
+    filePaths(ws).filter { other =>
+      files.contains(other) == false and names.any { name => other.toLower.contains(name) }
+    }
   }
 
   # Test files are found by one ripgrep search over the project tree, with
@@ -788,7 +823,7 @@ type VitestProject {
   # back from the same search and mark nested projects, whose files are left
   # out. Search lists only files with content, so empty files are not keys.
   # The order is byte order, so keys are stable.
-  let testFiles(ws: Workspace!): [String!]! {
+  let filePaths(ws: Workspace!): [String!]! {
     let prefix = if (path == ".") { "" } else { path + "/" }
     let found = ws
       .search(
@@ -844,7 +879,7 @@ type VitestTestFiles @collection {
   """
   Run the selected test files in this project.
   """
-  test(ws: Workspace!): Void @check {
+  test(ws: Workspace!): Void {
     # With nothing selected out, run the project as a whole with its own
     # Vitest config rather than naming every file. Without a delta, the
     # explicit list is the safe choice.
@@ -856,7 +891,7 @@ type VitestTestFiles @collection {
     if (whole) {
       project.test(ws)
     } else if (files.length > 0) {
-      project.runFiles(ws, files)
+      project.runFiles(ws, files, [])
     }
     null
   }
@@ -874,9 +909,92 @@ type VitestTestFile {
   let project: VitestProject!
 
   """
+  Tests in this file, keyed by full name.
+  """
+  tests(ws: Workspace!): VitestTests! {
+    VitestTests(names: project.testNames(ws, path), file: self)
+  }
+
+  """
   Run this test file.
   """
+  test(ws: Workspace!): Void {
+    project.runFiles(ws, [path], [])
+  }
+
+  """
+  Run exactly these tests of this file, by full name.
+  """
+  let runTests(ws: Workspace!, names: [String!]!): Void {
+    # --testNamePattern is a JavaScript regexp matched anywhere in a full
+    # name whose parts are joined by a space, not the " > " `vitest list`
+    # prints between them, so the names are rejoined, escaped and anchored.
+    let pattern = "^(" + names.map { name =>
+      name.split(" > ").join(" ").replaceMatches(`([\\^$.|?*+()\[\]{}])`, with: "\\$1")
+    }.join("|") + ")$"
+    project.runFiles(ws, [path], ["-t", pattern])
+  }
+}
+
+"""
+Tests in a Vitest test file, keyed by full name.
+"""
+type VitestTests @collection {
+  """
+  Full test names, as `vitest list` prints them after the file path.
+  """
+  names: [String!]! @keys
+
+  """
+  Tests selected in or out since the collection was discovered.
+  """
+  delta: CollectionDelta
+
+  let file: VitestTestFile!
+
+  """
+  The test with this full name.
+  """
+  named(name: String!): VitestTest! @get {
+    VitestTest(name: name, file: file)
+  }
+
+  """
+  Run the selected tests of this file.
+  """
   test(ws: Workspace!): Void @check {
-    project.runFiles(ws, [path])
+    # With nothing selected out, run the whole file rather than naming every
+    # test, so the ones `vitest list` did not report still run. Without a
+    # delta, the explicit list is the safe choice.
+    let whole = if (delta == null) {
+      false
+    } else {
+      delta.addedKeys.length == 0 and delta.removedKeys.length == 0
+    }
+    if (whole) {
+      file.test(ws)
+    } else if (names.length > 0) {
+      file.runTests(ws, names)
+    }
+    null
+  }
+}
+
+"""
+A single Vitest test.
+"""
+type VitestTest {
+  """
+  Full test name, as `vitest list` prints it after the file path.
+  """
+  name: String!
+
+  let file: VitestTestFile!
+
+  """
+  Run this test.
+  """
+  test(ws: Workspace!): Void @check {
+    file.runTests(ws, [name])
   }
 }

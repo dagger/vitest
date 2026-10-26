@@ -17,9 +17,10 @@ dagger check
 
 #### Checks and selection
 
-Projects and their test files are collections. `dagger check` lists one check
-per test file, addressed as `vitest/projects/tests/test`, and runs the selected
-files of each project together, in one `vitest` invocation per project:
+Projects, their test files and each file's tests are collections. `dagger
+check` lists one check per test file, addressed as
+`vitest/projects/test-files/tests/test`, and runs each file in its own
+`vitest` invocation:
 
 ```bash
 # list what would run, one line per test file
@@ -35,13 +36,17 @@ dagger check --check test
 dagger check --vitest-project=apps/web
 
 # some test files of one project
-dagger check vitest/projects/tests/test \
+dagger check vitest/projects/test-files/tests/test \
   --vitest-project=apps/web \
   --vitest-test-file=src/a.test.ts --vitest-test-file=src/b.test.ts
+
+# a single test, by the full name `vitest list` prints after the file path
+dagger check --vitest-test='the sum > adds two numbers'
 
 # the keys of each collection
 dagger list vitest-projects -a
 dagger list vitest-test-files -a --vitest-project=apps/web
+dagger list vitest-tests -a --vitest-test-file=src/a.test.ts
 ```
 
 | Flag | Selects |
@@ -51,18 +56,30 @@ dagger list vitest-test-files -a --vitest-project=apps/web
 | `--vitest-project=PATH` | a project, by workspace-root-relative root (repeatable) |
 | `--vitest-projects` | every project |
 | `--vitest-test-file=PATH` | a test file, by project-relative path (repeatable) |
-| `--vitest-tests` | every test file |
+| `--vitest-test-files` | every test file |
+| `--vitest-test=NAME` | a test, by full name (repeatable) |
+| `--vitest-tests` | every test |
 
-The key flags are named after the item types, `VitestProject` and
-`VitestTestFile`; `dagger check --help` lists the flags in effect.
+The key flags are named after the item types, `VitestProject`,
+`VitestTestFile` and `VitestTest`; `dagger check --help` lists the flags in
+effect.
 
-When none of a project's test files is selected out, the project runs as a
-plain `vitest`, so Vitest's own config decides what runs. Otherwise only the
-selected files run: they are passed to Vitest by path, and because Vitest
-matches file arguments as substrings (so `src/a.test.ts` would also run
-`src/a.test.tsx` or `lib/src/a.test.ts`), every other discovered test file with
-the same file name is removed from the container first. This holds whatever
-`include`/`exclude` the Vitest config or its inline projects set.
+When none of a file's tests is selected out, the whole file runs, so tests the
+listing did not report still run. Otherwise only the selected tests run,
+through Vitest's `--testNamePattern`: their full names are escaped and
+anchored, so a name holding regexp characters matches only itself.
+
+Test files are passed to Vitest by path, and because Vitest matches file
+arguments as substrings (so `src/a.test.ts` would also run `src/a.test.tsx` or
+`lib/src/a.test.ts`), every other discovered test file with the same file name
+is removed from the container first. This holds whatever `include`/`exclude`
+the Vitest config or its inline projects set.
+
+A project's test files can also be run together, in one `vitest` invocation,
+through `testFiles(ws)` — see [below](#using-it-from-another-module). With
+nothing selected out that is a plain `vitest`, so Vitest's own config decides
+what runs; `dagger check` does not take that path, so a test file that only
+the config's `include` adds is not checked.
 
 If the Vitest config defines projects you don't want to run in a container,
 such as browser or e2e projects, name the ones to run with Vitest's `--project`
@@ -103,8 +120,8 @@ files unless the outer config excludes them.
 Test files are keyed by their path relative to the project root. They are
 found by one ripgrep search per project with Vitest's default `include`,
 `**/*.{test,spec}.?(c|m)[jt]s?(x)`, pruning `node_modules`, `.git` and the
-subtrees of nested projects. Listing runs no container. Static discovery does
-not read your Vitest config, so:
+subtrees of nested projects. Listing test files runs no container. Static
+discovery does not read your Vitest config, so:
 
 - A custom `include` or `exclude` in the config is not seen. Files your config
   adds still run whenever the whole project runs (no test file selected out),
@@ -114,6 +131,22 @@ not read your Vitest config, so:
   check, so `dagger check` does not run it. Call the project's `test` function
   from the API to run it.
 - Empty files are not listed.
+
+Tests are keyed by the full name `vitest list` prints after the file path,
+suites included, e.g. `the sum > adds two numbers`. Unlike test files these
+come from Vitest itself — one `vitest list <file>` run per file, which needs
+the project installed — because names can be computed and `test.each`
+generates them. Nothing lists them until you ask: `dagger check` with no test
+selected never runs `vitest list`. A config defining Vitest `projects` lists
+each file once per project that includes it, under one set of keys.
+
+`test.skip` and `test.todo` are left out of `vitest list`, so they are not
+keys and cannot be selected on their own. They are reported as skipped when
+their file runs.
+
+`vitest list` arrives in Vitest 2.1. On an older Vitest it is read as a file
+filter, so a project has no tests to select and `list(ws)` reports nothing;
+select test files instead.
 
 #### Installing dependencies
 
@@ -189,9 +222,10 @@ includeExtraFiles = []
 #### Using it from another module
 
 `projects(ws)` returns the project collection. Collections expose `keys`,
-`get(key:)`, `subset(keys:)` and `batch`; each project's `tests(ws)` is the
-test-file collection. A check called through a dependency comes back as a
-`Check` that has not run yet, so wrap it:
+`get(key:)`, `subset(keys:)` and `batch`; each project's `testFiles(ws)` is
+the test-file collection, and each test file's `tests(ws)` is its test
+collection. A check called through a dependency comes back as a `Check` that
+has not run yet, so wrap it:
 
 ```dang
 let run(check: Check!): Void {
@@ -205,11 +239,16 @@ testWeb(ws: Workspace!): Void @check {
   let projects = vitest.projects(ws)
   # every project, as a plain function
   projects.batch.test(ws)
-  # one project's selected test files
-  let tests = projects.get(key: "apps/web").tests(ws)
-  run(tests.subset(keys: ["src/a.test.ts"]).batch.test(ws))
+  # one project's selected test files, in one vitest invocation
+  let files = projects.get(key: "apps/web").testFiles(ws)
+  files.subset(keys: ["src/a.test.ts"]).batch.test(ws)
   # a single test file
-  run(tests.get(key: "src/a.test.ts").test(ws))
+  let file = files.get(key: "src/a.test.ts")
+  file.test(ws)
+  # selected tests of that file, and a single test -- these are checks
+  let tests = file.tests(ws)
+  run(tests.subset(keys: ["the sum > adds two numbers"]).batch.test(ws))
+  run(tests.get(key: "the sum > adds two numbers").test(ws))
 }
 ```
 
