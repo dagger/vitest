@@ -178,7 +178,7 @@ there, and Vitest runs with the project directory as its working directory, so
   browser mode can use it) and its directory, `~/.cache/puppeteer`, is on a
   cache volume, so it happens once. Playwright downloads nothing on install;
   for browser-mode tests with the Playwright provider, use a base image that
-  ships its browsers (e.g. `baseImageAddress = "mcr.microsoft.com/playwright:<version>"`)
+  ships its browsers (e.g. `baseImage = "mcr.microsoft.com/playwright:<version>"`)
   or install them in your `build` script; `~/.cache/ms-playwright` is on a
   cache volume too, so that download also happens once. Cypress's binary download and git hook installers
   (husky, simple-git-hooks) are switched off.
@@ -213,8 +213,9 @@ environment = ["TZ=UTC", "NODE_ENV=test"]
 build = true
 # Flags to pass to every vitest run, and to `list`. Default: [].
 flags = ["--reporter=verbose"]
-# The base image. Default: "node:25-alpine".
-baseImageAddress = "node:25-alpine"
+# The base container, with Node.js installed: an image reference, or a
+# dag:// address of a function that returns a Container. Default: "node:25-alpine".
+baseImage = "node:25-alpine"
 # Extra workspace files mounted at their paths (see below). Default: [].
 includeExtraFiles = []
 ```
@@ -222,7 +223,7 @@ includeExtraFiles = []
 #### Using it from another module
 
 `projects(ws)` returns the project collection. Collections expose `keys`,
-`get(key:)`, `subset(keys:)` and `batch`; each project's `testFiles(ws)` is
+`get(key:)`, `subset(keys:)` and their batch functions, such as `test(ws)`; each project's `testFiles(ws)` is
 the test-file collection, and each test file's `tests(ws)` is its test
 collection. A check called through a dependency comes back as a `Check` that
 has not run yet, so wrap it:
@@ -238,16 +239,16 @@ let run(check: Check!): Void {
 testWeb(ws: Workspace!): Void @check {
   let projects = vitest.projects(ws)
   # every project, as a plain function
-  projects.batch.test(ws)
+  projects.test(ws)
   # one project's selected test files, in one vitest invocation
   let files = projects.get(key: "apps/web").testFiles(ws)
-  files.subset(keys: ["src/a.test.ts"]).batch.test(ws)
+  files.subset(keys: ["src/a.test.ts"]).test(ws)
   # a single test file
   let file = files.get(key: "src/a.test.ts")
   file.test(ws)
   # selected tests of that file, and a single test -- these are checks
   let tests = file.tests(ws)
-  run(tests.subset(keys: ["the sum > adds two numbers"]).batch.test(ws))
+  run(tests.subset(keys: ["the sum > adds two numbers"]).test(ws))
   run(tests.get(key: "the sum > adds two numbers").test(ws))
 }
 ```
