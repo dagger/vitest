@@ -223,7 +223,7 @@ includeExtraFiles = []
 #### Using it from another module
 
 `projects(ws)` returns the project collection. Collections expose `keys`,
-`get(key:)`, `subset(keys:)` and `batch`; each project's `testFiles(ws)` is
+`get(key:)`, `subset(keys:)` and their batch functions, such as `test(ws)`; each project's `testFiles(ws)` is
 the test-file collection, and each test file's `tests(ws)` is its test
 collection. A check called through a dependency comes back as a `Check` that
 has not run yet, so wrap it:
@@ -239,16 +239,16 @@ let run(check: Check!): Void {
 testWeb(ws: Workspace!): Void @check {
   let projects = vitest.projects(ws)
   # every project, as a plain function
-  projects.batch.test(ws)
+  projects.test(ws)
   # one project's selected test files, in one vitest invocation
   let files = projects.get(key: "apps/web").testFiles(ws)
-  files.subset(keys: ["src/a.test.ts"]).batch.test(ws)
+  files.subset(keys: ["src/a.test.ts"]).test(ws)
   # a single test file
   let file = files.get(key: "src/a.test.ts")
   file.test(ws)
   # selected tests of that file, and a single test -- these are checks
   let tests = file.tests(ws)
-  run(tests.subset(keys: ["the sum > adds two numbers"]).batch.test(ws))
+  run(tests.subset(keys: ["the sum > adds two numbers"]).test(ws))
   run(tests.get(key: "the sum > adds two numbers").test(ws))
 }
 ```

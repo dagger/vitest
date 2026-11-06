@@ -43,7 +43,7 @@ type E2e {
   let checkAll(ws: Workspace!): Void {
     let projects = vitest.projects(ws)
     projects.keys.each { path =>
-      projects.get(key: path).testFiles(ws).batch.test(ws)
+      projects.get(key: path).testFiles(ws).test(ws)
     }
     null
   }
@@ -208,7 +208,7 @@ type E2e {
 
     # The project-level batch, for API callers, covers the same projects.
     let projectsFailed = {
-      vitest.projects(broken.asWorkspace(cwd: ".")).batch.test(
+      vitest.projects(broken.asWorkspace(cwd: ".")).test(
         broken.asWorkspace(cwd: "."),
       )
       false
@@ -285,13 +285,13 @@ type E2e {
 
     let one = "src/a.test.ts"
     assert(tests.get(key: one).path == one, "get did not return the test file at its key")
-    tests.subset(keys: [one]).batch.test(ws)
+    tests.subset(keys: [one]).test(ws)
     tests.get(key: one).test(ws)
-    tests.subset(keys: [one, "src/components/__tests__/HelloWorld.spec.ts"]).batch.test(ws)
+    tests.subset(keys: [one, "src/components/__tests__/HelloWorld.spec.ts"]).test(ws)
 
     let pair = tests.subset(keys: ["src/aa.test.ts", one])
     assertPaths(pair.keys, [one, "src/aa.test.ts"], "subset order")
-    let pairFailed = { pair.batch.test(ws); false } rescue true
+    let pairFailed = { pair.test(ws); false } rescue true
     assert(pairFailed, "a subset holding a failing file passed")
 
     let outside = { pair.get(key: "src/a.test.tsx").path } rescue {
@@ -311,7 +311,7 @@ type E2e {
 
     let none = tests.subset(keys: [])
     assert(none.keys.length == 0, "empty subset kept keys: " + none.keys.join(", "))
-    none.batch.test(ws)
+    none.test(ws)
 
     null
   }
@@ -353,20 +353,20 @@ type E2e {
 
     let one = "outer > inner > adds (1+1)"
     assert(tests.get(key: one).name == one, "get did not return the test at its key")
-    run(tests.subset(keys: [one]).batch.test(ws))
+    run(tests.subset(keys: [one]).test(ws))
     run(tests.get(key: one).test(ws))
-    run(tests.subset(keys: [one, "top"]).batch.test(ws))
-    run(tests.subset(keys: ["top"]).batch.test(ws))
+    run(tests.subset(keys: [one, "top"]).test(ws))
+    run(tests.subset(keys: ["top"]).test(ws))
 
-    let withFailing = { run(tests.subset(keys: [one, "fails"]).batch.test(ws)); false } rescue true
+    let withFailing = { run(tests.subset(keys: [one, "fails"]).test(ws)); false } rescue true
     assert(withFailing, "a subset holding a failing test passed")
 
-    let wholeFailed = { run(tests.batch.test(ws)); false } rescue true
+    let wholeFailed = { run(tests.test(ws)); false } rescue true
     assert(wholeFailed, "the unfiltered batch did not run the whole file")
 
     let none = tests.subset(keys: [])
     assert(none.keys.length == 0, "empty subset kept keys: " + none.keys.join(", "))
-    run(none.batch.test(ws))
+    run(none.test(ws))
 
     null
   }
@@ -402,7 +402,7 @@ type E2e {
       tests.keys.contains("checks/fails.ts") == false,
       "static discovery read the config's include",
     )
-    let wholeFailed = { tests.batch.test(ws); false } rescue true
+    let wholeFailed = { tests.test(ws); false } rescue true
     assert(wholeFailed, "the unfiltered batch did not run the project as a whole")
 
     let projectFailed = {
@@ -411,7 +411,7 @@ type E2e {
     } rescue true
     assert(projectFailed, "the project's own test did not run the project as a whole")
 
-    tests.subset(keys: ["src/a.test.ts"]).batch.test(ws)
+    tests.subset(keys: ["src/a.test.ts"]).test(ws)
 
     null
   }
@@ -444,10 +444,10 @@ type E2e {
       ["t/a.spec.ts", "t/a.spec.tsx", "t/env.spec.ts", "t/globals.spec.ts", "x/t/a.spec.ts"],
       "test files of the project-exclude fixture",
     )
-    tests.subset(keys: ["t/a.spec.ts"]).batch.test(ws)
+    tests.subset(keys: ["t/a.spec.ts"]).test(ws)
     tests.get(key: "t/a.spec.ts").test(ws)
 
-    let wholeFailed = { tests.batch.test(ws); false } rescue true
+    let wholeFailed = { tests.test(ws); false } rescue true
     assert(wholeFailed, "the whole run should have run the decoys")
 
     null
@@ -459,7 +459,7 @@ type E2e {
   """
   mutatedGlobalsCheck: Void @check {
     let ws = projectExclude.asWorkspace
-    vitest.projects(ws).get(key: ".").testFiles(ws).subset(keys: ["t/globals.spec.ts"]).batch.test(ws)
+    vitest.projects(ws).get(key: ".").testFiles(ws).subset(keys: ["t/globals.spec.ts"]).test(ws)
 
     null
   }
@@ -642,8 +642,8 @@ type E2e {
 
     let ws = sharedFixture.asWorkspace(cwd: "a")
     let tests = vitest(includeExtraFiles: ["fixtures/**"]).projects(ws).get(key: "a").testFiles(ws)
-    tests.batch.test(ws)
-    tests.subset(keys: ["src/shared.test.ts"]).batch.test(ws)
+    tests.test(ws)
+    tests.subset(keys: ["src/shared.test.ts"]).test(ws)
 
     null
   }
@@ -658,7 +658,7 @@ type E2e {
     let tool = vitest(includeExtraFiles: ["fixtures/**"])
 
     assertPaths(tool.projects(ws).keys, ["a"], "from a/work")
-    tool.projects(ws).get(key: "a").testFiles(ws).batch.test(ws)
+    tool.projects(ws).get(key: "a").testFiles(ws).test(ws)
 
     null
   }
@@ -679,7 +679,7 @@ type E2e {
     let ws = siblings.withNewFile("a/src/session.test.ts", sessionTest).asWorkspace(cwd: "a")
     let tests = vitest.projects(ws).get(key: "a").testFiles(ws)
 
-    tests.subset(keys: ["src/session.test.ts"]).batch.test(ws)
+    tests.subset(keys: ["src/session.test.ts"]).test(ws)
 
     null
   }
