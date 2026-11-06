@@ -178,7 +178,7 @@ there, and Vitest runs with the project directory as its working directory, so
   browser mode can use it) and its directory, `~/.cache/puppeteer`, is on a
   cache volume, so it happens once. Playwright downloads nothing on install;
   for browser-mode tests with the Playwright provider, use a base image that
-  ships its browsers (e.g. `baseImageAddress = "mcr.microsoft.com/playwright:<version>"`)
+  ships its browsers (e.g. `baseImage = "mcr.microsoft.com/playwright:<version>"`)
   or install them in your `build` script; `~/.cache/ms-playwright` is on a
   cache volume too, so that download also happens once. Cypress's binary download and git hook installers
   (husky, simple-git-hooks) are switched off.
@@ -213,8 +213,9 @@ environment = ["TZ=UTC", "NODE_ENV=test"]
 build = true
 # Flags to pass to every vitest run, and to `list`. Default: [].
 flags = ["--reporter=verbose"]
-# The base image. Default: "node:25-alpine".
-baseImageAddress = "node:25-alpine"
+# The base container, with Node.js installed: an image reference, or a
+# dag:// address of a function that returns a Container. Default: "node:25-alpine".
+baseImage = "node:25-alpine"
 # Extra workspace files mounted at their paths (see below). Default: [].
 includeExtraFiles = []
 ```

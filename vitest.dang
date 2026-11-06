@@ -3,9 +3,31 @@ Toolchain to execute Vitest tests
 """
 type Vitest {
   """
-  The base image to use.
+  The base container. It must have Node.js installed. Default: node:25-alpine.
   """
-  baseImageAddress: String! = "node:25-alpine"
+  baseImage: Container = null
+
+  """
+  Deprecated: use baseImage. The address of the base image. If you set it,
+  the base container is container.from(baseImageAddress). You cannot set it
+  together with baseImage.
+  """
+  baseImageAddress: String! @deprecated(reason: "Use baseImage instead.") = ""
+
+  """
+  The base container that baseImage or baseImageAddress selects.
+  """
+  let baseContainer: Container! = if (baseImageAddress != "") {
+    if (baseImage != null) {
+      raise "baseImage and baseImageAddress are mutually exclusive: set only baseImage"
+    } else {
+      container.from(baseImageAddress)
+    }
+  } else if (baseImage != null) {
+    baseImage
+  } else {
+    container.from("node:25-alpine")
+  }
 
   """
   Package manager that installs dependencies: npm, yarn, pnpm or bun. Empty
@@ -390,8 +412,7 @@ type Vitest {
   binary and git hooks are switched off.
   """
   let nodeBase(pm: String!): Container! {
-    let base = container
-      .from(baseImageAddress)
+    let base = baseContainer
       .withMountedCache("/root/.npm", cacheVolume("npm-cache"))
       .withEnvVariable("npm_config_cache", "/root/.npm")
       # Concurrent yarn 1 installs corrupt a shared cache.
