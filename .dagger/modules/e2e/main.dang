@@ -29,21 +29,21 @@ type E2e {
   Run the vitest toolchain against a real-world repository.
 
   This pulls the hello-dagger repo, exposes it as a Workspace, and runs the
-  test-file batch of every discovered project end-to-end.
+  test files of every discovered project end-to-end.
   """
   testHelloDagger: Void @check {
     checkAll(git(repo).head.tree.asWorkspace)
   }
 
   """
-  Run the test-file batch of every project visible from the workspace's cwd.
-  This is one run per project, where `dagger check` runs each file on its own
-  through the tests collection; both see the same projects and files.
+  Run the test files of every project visible from the workspace's cwd, one
+  run per project, as `dagger check` does through the shared run of each
+  project's test checks; both see the same projects and files.
   """
   let checkAll(ws: Workspace!): Void {
     let projects = vitest.projects(ws)
     projects.keys.each { path =>
-      projects.get(key: path).testFiles(ws).batch.test(ws)
+      projects.get(key: path).testFiles(ws).test(ws)
     }
     null
   }
@@ -206,14 +206,14 @@ type E2e {
       "checks from a should have run a's own tests",
     )
 
-    # The project-level batch, for API callers, covers the same projects.
+    # The project-level helper, for API callers, covers the same projects.
     let projectsFailed = {
-      vitest.projects(broken.asWorkspace(cwd: ".")).batch.test(
+      vitest.projects(broken.asWorkspace(cwd: ".")).test(
         broken.asWorkspace(cwd: "."),
       )
       false
     } rescue true
-    assert(projectsFailed, "the projects batch should have run the project b")
+    assert(projectsFailed, "the projects helper should have run the project b")
 
     null
   }
@@ -285,13 +285,13 @@ type E2e {
 
     let one = "src/a.test.ts"
     assert(tests.get(key: one).path == one, "get did not return the test file at its key")
-    tests.subset(keys: [one]).batch.test(ws)
+    tests.subset(keys: [one]).test(ws)
     tests.get(key: one).test(ws)
-    tests.subset(keys: [one, "src/components/__tests__/HelloWorld.spec.ts"]).batch.test(ws)
+    tests.subset(keys: [one, "src/components/__tests__/HelloWorld.spec.ts"]).test(ws)
 
     let pair = tests.subset(keys: ["src/aa.test.ts", one])
     assertPaths(pair.keys, [one, "src/aa.test.ts"], "subset order")
-    let pairFailed = { pair.batch.test(ws); false } rescue true
+    let pairFailed = { pair.test(ws); false } rescue true
     assert(pairFailed, "a subset holding a failing file passed")
 
     let outside = { pair.get(key: "src/a.test.tsx").path } rescue {
@@ -311,7 +311,7 @@ type E2e {
 
     let none = tests.subset(keys: [])
     assert(none.keys.length == 0, "empty subset kept keys: " + none.keys.join(", "))
-    none.batch.test(ws)
+    none.test(ws)
 
     null
   }
@@ -330,80 +330,155 @@ type E2e {
   }
 
   """
-  Tests are keyed by the full name `vitest list` prints after the file path,
-  in declaration order, without the inline project's name, without the decoy
-  file's tests, and without the ones Vitest will not run. get and subset
-  follow the keys, and a subset runs exactly its own tests: a passing test of
-  a file that also holds a failing one passes, a name holding regexp
-  characters matches itself, and a name the decoy file shares does not run
-  the decoy's.
+  Tests are keyed by the full name `vitest list` prints, read from the
+  source: suites and test joined by " > ", in source order, without
+  test.skip. A test check called directly gets no engine selection, so it
+  shares one run of the files it is handed and reports only its own result:
+  a passing test passes next to a failing one, a name holding regexp
+  characters matches itself, and the decoy file's test of the same name does
+  not run.
   """
   testsCollectionCheck: Void @check {
     let ws = namedTests.asWorkspace
-    let file = vitest.projects(ws).get(key: ".").testFiles(ws).get(key: "src/named.test.ts")
-    let tests = file.tests(ws)
-
-    # `vitest list` leaves out test.skip and test.todo, so they are not keys
-    # and cannot be selected on their own.
+    let files = vitest.projects(ws).get(key: ".").testFiles(ws)
+    let named = "src/named.test.ts"
+    let tests = files.get(key: named).tests
     assertPaths(
       tests.keys,
       ["outer > inner > adds (1+1)", "outer > plain", "top", "fails"],
       "tests of src/named.test.ts",
     )
+    assertPaths(files.get(key: "src/named.test.tsx").tests.keys, ["top", "decoy only"], "tests of src/named.test.tsx")
 
     let one = "outer > inner > adds (1+1)"
+    let only = files.subset(keys: [named])
     assert(tests.get(key: one).name == one, "get did not return the test at its key")
-    run(tests.subset(keys: [one]).batch.test(ws))
-    run(tests.get(key: one).test(ws))
-    run(tests.subset(keys: [one, "top"]).batch.test(ws))
-    run(tests.subset(keys: ["top"]).batch.test(ws))
+    run(tests.get(key: one).test(ws, selection: only))
+    run(tests.get(key: "top").test(ws, selection: files))
+    let failed = { run(tests.get(key: "fails").test(ws, selection: only)); "passed" } rescue {
+      err: Error => err.message
+    }
+    assert(failed.contains("fails failed"), "the failing test check did not report its failure: " + failed)
 
-    let withFailing = { run(tests.subset(keys: [one, "fails"]).batch.test(ws)); false } rescue true
+    # The collection helpers are plain functions.
+    tests.subset(keys: [one, "top"]).test(ws)
+    let withFailing = { tests.subset(keys: [one, "fails"]).test(ws); false } rescue true
     assert(withFailing, "a subset holding a failing test passed")
-
-    let wholeFailed = { run(tests.batch.test(ws)); false } rescue true
-    assert(wholeFailed, "the unfiltered batch did not run the whole file")
-
-    let none = tests.subset(keys: [])
-    assert(none.keys.length == 0, "empty subset kept keys: " + none.keys.join(", "))
-    run(none.batch.test(ws))
+    let wholeFailed = { tests.test(ws); false } rescue true
+    assert(wholeFailed, "the unfiltered helper did not run the whole file")
 
     null
   }
 
   """
-  A project whose Vitest config adds a file that static discovery does not
-  see:
+  A file covering the forms static names have to tell apart.
+  """
+  let staticNamesTest: String! = "import { describe, it, suite, test } from 'vitest'\n" +
+    "// test('commented out', () => {})\n" +
+    "describe('outer', () => {\n" +
+    "  describe(\"inner\", function () {\n" +
+    "    it(`deep`, () => {})\n" +
+    "  })\n" +
+    "  test.concurrent('concurrent', () => {})\n" +
+    "  test.skip('skipped', () => {})\n" +
+    "  test.todo('later')\n" +
+    "  test.skipIf(process.env.NEVER)('conditional', () => {})\n" +
+    "  if (process.env.X) { test('in a branch', () => {}) } else { test('in else', () => {}) }\n" +
+    "  {\n" +
+    "    test('in an inner block', () => {})\n" +
+    "  }\n" +
+    "  ;[1].forEach(() => { test('in a callback', () => {}) })\n" +
+    "  test('a' + 'b', () => {})\n" +
+    "})\n" +
+    "suite('s', () => { it.fails('fails on purpose', () => { throw new Error('x') }) })\n" +
+    "describe.each([1])('each %i', () => { test('in each', () => {}) })\n" +
+    "function helper(name) { test(name, () => {}) }\n" +
+    "function fixed() { test('literal in helper', () => {}) }\n" +
+    "for (const n of [1]) { test('in a loop', () => {}) }\n" +
+    "while (false) { test('in while', () => {}) }\n" +
+    "try { test('in try', () => {}) } catch { test('in catch', () => {}) }\n" +
+    "switch (1) { case 1: test('in switch', () => {}) }\n" +
+    "process.env.X ? test('ternary a', () => {}) : test('ternary b', () => {})\n" +
+    "process.env.X && test('and', () => {})\n" +
+    "const y = process.env.X ?? 1\n" +
+    "{\n" +
+    "  test('in a block', () => {})\n" +
+    "}\n" +
+    "test(`template $" + "{1}`, () => {})\n" +
+    "test('top (1+1) [x] {y} /z/', () => { expect(/a/.test('a')).toBe(true) })\n"
 
-      vitest.config.ts        include adds checks/**
+  """
+  Static names: only literal names whose every enclosing scope is the top
+  level, a named suite's callback or a plain block are keys, nested suites
+  joining with " > "; tests in branches, loops, try/catch, switch,
+  ternaries, helpers and callbacks fall under "*". Listing reads files only.
+  """
+  staticNamesCheck: Void @check {
+    let ws = directory
+      .withNewFile("vitest.config.mjs", "export default {}\n")
+      .withNewFile("all.test.js", staticNamesTest)
+      .withNewFile("named.test.js", "import { test } from 'vitest'\ntest('one', () => {})\n")
+      .withNewFile("none.test.js", "import { test } from 'vitest'\ntest.each([1])('row %i', () => {})\n")
+      .withNewFile("empty.test.js", "export const x = 1\n")
+      .asWorkspace
+    let files = vitest.projects(ws).get(key: ".").testFiles(ws)
+    assertPaths(
+      files.get(key: "all.test.js").tests.keys,
+      [
+        "outer > inner > deep",
+        "outer > concurrent",
+        "outer > conditional",
+        "outer > in an inner block",
+        "s > fails on purpose",
+        "in a block",
+        "top (1+1) [x] {y} /z/",
+        "*",
+      ],
+      "tests of all.test.js",
+    )
+    assertPaths(files.get(key: "named.test.js").tests.keys, ["one"], "tests of named.test.js")
+    assertPaths(files.get(key: "none.test.js").tests.keys, ["*"], "tests of none.test.js")
+    assertPaths(files.get(key: "empty.test.js").tests.keys, ["*"], "tests of empty.test.js")
+    null
+  }
+
+  """
+  A project whose Vitest config extends Vitest's default include and
+  exclude:
+
+      vitest.config.ts        include adds checks/**/*.ts, exclude adds e2e/**
       checks/fails.ts         fails
+      e2e/app.spec.ts         fails (a Playwright test, say)
       src/a.test.ts           passes
   """
   let configIncludeFixture: Directory! {
     project
       .withNewFile(
         "vitest.config.ts",
-        "import { mergeConfig, defineConfig, configDefaults } from 'vitest/config'\nimport viteConfig from './vite.config'\nexport default mergeConfig(viteConfig, defineConfig({\n  test: {\n    environment: 'jsdom',\n    include: [...configDefaults.include, 'checks/**/*.ts'],\n  },\n}))\n",
+        "import { mergeConfig, defineConfig, configDefaults } from 'vitest/config'\nimport viteConfig from './vite.config'\nexport default mergeConfig(viteConfig, defineConfig({\n  test: {\n    environment: 'jsdom',\n    include: [...configDefaults.include, 'checks/**/*.ts'],\n    exclude: [...configDefaults.exclude, 'e2e/**'],\n  },\n}))\n",
       )
       .withNewFile("checks/fails.ts", failingTest)
+      .withNewFile("e2e/app.spec.ts", failingTest)
       .withNewFile("src/a.test.ts", passingTest)
   }
 
   """
-  With nothing selected out, the batch runs the whole project natively, with
-  the project's own Vitest config; with a selection, it runs only the selected
-  files.
+  Static discovery reads a config that extends Vitest's defaults with
+  literals. With nothing selected out, the test-file helper runs the whole
+  project natively, with the project's own Vitest config; with a selection,
+  it runs only the selected files.
   """
   wholeVersusFilteredCheck: Void @check {
     let ws = configIncludeFixture.asWorkspace
     let tests = vitest.projects(ws).get(key: ".").testFiles(ws)
 
-    assert(
-      tests.keys.contains("checks/fails.ts") == false,
-      "static discovery read the config's include",
+    assertPaths(
+      tests.keys,
+      ["checks/fails.ts", "src/a.test.ts", "src/components/__tests__/HelloWorld.spec.ts"],
+      "test files of a config extending the defaults",
     )
-    let wholeFailed = { tests.batch.test(ws); false } rescue true
-    assert(wholeFailed, "the unfiltered batch did not run the project as a whole")
+    let wholeFailed = { tests.test(ws); false } rescue true
+    assert(wholeFailed, "the unfiltered helper did not run the project as a whole")
 
     let projectFailed = {
       vitest.projects(ws).get(key: ".").test(ws)
@@ -411,7 +486,7 @@ type E2e {
     } rescue true
     assert(projectFailed, "the project's own test did not run the project as a whole")
 
-    tests.subset(keys: ["src/a.test.ts"]).batch.test(ws)
+    tests.subset(keys: ["src/a.test.ts"]).test(ws)
 
     null
   }
@@ -444,10 +519,10 @@ type E2e {
       ["t/a.spec.ts", "t/a.spec.tsx", "t/env.spec.ts", "t/globals.spec.ts", "x/t/a.spec.ts"],
       "test files of the project-exclude fixture",
     )
-    tests.subset(keys: ["t/a.spec.ts"]).batch.test(ws)
+    tests.subset(keys: ["t/a.spec.ts"]).test(ws)
     tests.get(key: "t/a.spec.ts").test(ws)
 
-    let wholeFailed = { tests.batch.test(ws); false } rescue true
+    let wholeFailed = { tests.test(ws); false } rescue true
     assert(wholeFailed, "the whole run should have run the decoys")
 
     null
@@ -459,7 +534,7 @@ type E2e {
   """
   mutatedGlobalsCheck: Void @check {
     let ws = projectExclude.asWorkspace
-    vitest.projects(ws).get(key: ".").testFiles(ws).subset(keys: ["t/globals.spec.ts"]).batch.test(ws)
+    vitest.projects(ws).get(key: ".").testFiles(ws).subset(keys: ["t/globals.spec.ts"]).test(ws)
 
     null
   }
@@ -472,11 +547,11 @@ type E2e {
     let one = "t/env.spec.ts"
 
     let failed = {
-      vitest.projects(ws).get(key: ".").testFiles(ws).get(key: one).test(ws)
+      vitest.projects(ws).get(key: ".").testFiles(ws).subset(keys: [one]).test(ws)
       false
     } rescue true
     assert(failed, "the env test passed without the variable")
-    vitest(environment: ["DAGGER_VITEST_E2E=yes"]).projects(ws).get(key: ".").testFiles(ws).get(key: one).test(ws)
+    vitest(environment: ["DAGGER_VITEST_E2E=yes"]).projects(ws).get(key: ".").testFiles(ws).subset(keys: [one]).test(ws)
 
     null
   }
@@ -642,8 +717,8 @@ type E2e {
 
     let ws = sharedFixture.asWorkspace(cwd: "a")
     let tests = vitest(includeExtraFiles: ["fixtures/**"]).projects(ws).get(key: "a").testFiles(ws)
-    tests.batch.test(ws)
-    tests.subset(keys: ["src/shared.test.ts"]).batch.test(ws)
+    tests.test(ws)
+    tests.subset(keys: ["src/shared.test.ts"]).test(ws)
 
     null
   }
@@ -658,7 +733,7 @@ type E2e {
     let tool = vitest(includeExtraFiles: ["fixtures/**"])
 
     assertPaths(tool.projects(ws).keys, ["a"], "from a/work")
-    tool.projects(ws).get(key: "a").testFiles(ws).batch.test(ws)
+    tool.projects(ws).get(key: "a").testFiles(ws).test(ws)
 
     null
   }
@@ -679,7 +754,7 @@ type E2e {
     let ws = siblings.withNewFile("a/src/session.test.ts", sessionTest).asWorkspace(cwd: "a")
     let tests = vitest.projects(ws).get(key: "a").testFiles(ws)
 
-    tests.subset(keys: ["src/session.test.ts"]).batch.test(ws)
+    tests.subset(keys: ["src/session.test.ts"]).test(ws)
 
     null
   }
@@ -692,13 +767,521 @@ type E2e {
     let ws = project.asWorkspace
     let one = "src/components/__tests__/HelloWorld.spec.ts"
 
-    vitest.projects(ws).get(key: ".").testFiles(ws).get(key: one).test(ws)
+    vitest.projects(ws).get(key: ".").testFiles(ws).subset(keys: [one]).test(ws)
     let failed = {
-      vitest(flags: ["--no-such-flag"]).projects(ws).get(key: ".").testFiles(ws).get(key: one).test(ws)
+      vitest(flags: ["--no-such-flag"]).projects(ws).get(key: ".").testFiles(ws).subset(keys: [one]).test(ws)
       false
     } rescue true
     assert(failed, "the flags setting did not reach vitest")
 
+    null
+  }
+
+  # Only the unindented CHECKS header counts. Nested TESTS summaries can
+  # report correct Vitest results even when Dagger attributes the checks
+  # incorrectly.
+  let checkSummaryMatches(output: String!, passed: Int!, failed: Int!): Boolean! {
+    let headers = output.split("\n").filter { line =>
+      line.hasPrefix("CHECKS ") or line.hasPrefix("== CHECKS ==")
+    }
+    let none: [String!]! = []
+    let expected = (if (failed > 0) { ["✘", `${failed}`, "failed"] } else { none })
+      + (if (passed > 0) { ["✔", `${passed}`, "passed"] } else { none })
+    headers.length == 1 and headers[0]!.trimPrefix("== ").trimPrefix("CHECKS").trimPrefix(" ==")
+      .trimSpace.split(" ").filter { word => word != "" } == expected
+  }
+
+  selectedSummaryCheck: Void @check {
+    let wrong = "CHECKS  ✘ 8 failed\n  TESTS\n    ✘ 1 failed\n    ✔ 7 passed\n"
+    assert(checkSummaryMatches(wrong, 7, 1) == false, "nested test counts hid failed checks")
+    assert(checkSummaryMatches(wrong, 0, 8), "zero passing checks were not recognized")
+    assert(checkSummaryMatches("CHECKS  ✔ 18 passed\n", 8, 0) == false, "accepted a partial count")
+    assert(checkSummaryMatches("CHECKS  ✘ 1 failed  ✔ 7 passed\n", 7, 1), "mixed counts were not recognized")
+    assert(checkSummaryMatches("== CHECKS ==  ✔ 8 passed\n", 8, 0), "agent report was not recognized")
+    assert(checkSummaryMatches("  CHECKS  ✔ 8 passed\n", 8, 0) == false, "accepted a nested header")
+    assert(checkSummaryMatches("CHECKS  ✔ 8 passed\nCHECKS  ✔ 8 passed\n", 8, 0) == false, "accepted duplicate headers")
+    null
+  }
+
+  """
+  Run the engine-supplied dagger CLI with args on a workspace holding
+  fixture, with this repository installed as the vitest module.
+
+  Selection has to go through the CLI: direct Dang calls do not apply the
+  engine's filtered collection view.
+  """
+  let cli(ws: Workspace!, fixture: Directory!, args: [String!]!, settings: String!): Container! {
+    container
+      .from("alpine:3.23")
+      # Workspace.search runs on the client, here this container, with
+      # ripgrep, else a GNU grep; BusyBox's lacks the options it needs.
+      .withExec(["apk", "add", "--no-cache", "ripgrep"])
+      .withEnvVariable("NO_COLOR", "1")
+      .withDirectory("/source", ws.directory("/", exclude: ["**/node_modules", "dist", ".git"]))
+      .withDirectory("/work", fixture)
+      .withNewFile("/work/.git/HEAD", "ref: refs/heads/main\n")
+      .withNewFile(
+        "/work/dagger.toml",
+        "[modules.vitest]\nsource = \"/source\"\n" + (if (settings == "") { "" } else { "\n[modules.vitest.settings]\n" + settings + "\n" }),
+      )
+      .withWorkdir("/work")
+      .withExec(["/dev/.dagger/dagger"] + args, expect: ReturnType.ANY, daggerInDaggerNewSession: true)
+  }
+
+  """
+  Run `dagger check` with args through the CLI and return its report output
+  after asserting its exit status and check totals and that it contains
+  every message.
+  """
+  let selectedCheck(
+    ws: Workspace!,
+    fixture: Directory!,
+    args: [String!]!,
+    passed: Int!,
+    failed: Int! = 0,
+    messages: [String!]! = [],
+    settings: String! = "",
+  ): String! {
+    let result = cli(ws, fixture, ["--progress=report", "check", "--generated=false"] + args, settings)
+    let output = result.stdout + result.stderr
+    assert((result.exitCode == 0) == (failed == 0), "unexpected check exit status:\n" + output)
+    assert(checkSummaryMatches(output, passed, failed), "unexpected Dagger check totals:\n" + output)
+    messages.map { message =>
+      assert(output.contains(message), "missing " + message + ":\n" + output)
+    }
+    output
+  }
+
+  """
+  One npm project with vitest installed and an empty config.
+  """
+  let npmProject: Directory! {
+    directory
+      .withFile("package.json", namedTests.file("package.json"))
+      .withFile("package-lock.json", namedTests.file("package-lock.json"))
+      .withNewFile("vitest.config.mjs", "export default {}\n")
+  }
+
+  """
+  Tests foo and bar pass; other fails, proving it ran when it was not
+  selected.
+  """
+  let selectionTest: String! = "import { test } from 'vitest'\ntest('foo', () => {})\ntest('bar', () => {})\ntest('other', () => { throw new Error('excluded test ran') })\n"
+
+  """
+  Two projects, p1 and p2, each with the test files a.test.js, b.test.js
+  and unused.test.js, each holding selectionTest.
+  """
+  let selectionFixture: Directory! {
+    ["p1", "p2"].reduce(directory) { fixture, p =>
+      fixture.withDirectory(
+        p,
+        npmProject
+          .withNewFile("a.test.js", selectionTest)
+          .withNewFile("b.test.js", selectionTest)
+          .withNewFile("unused.test.js", selectionTest),
+      )
+    }
+  }
+
+  """
+  Two projects, two files in each and two tests in each file: 8 checks.
+  """
+  let selectionArgs: [String!]! {
+    ["p1", "p2"].map { p => "--vitest-project=" + p }
+      + ["a.test.js", "b.test.js"].map { f => "--vitest-test-file=" + f }
+      + ["foo", "bar"].map { t => "--vitest-test=" + t }
+  }
+
+  """
+  Selected tests across projects and files each pass on their own check,
+  and the test and the file left out do not run.
+  """
+  selectedTestsCheck(ws: Workspace!): Void @check {
+    selectedCheck(ws, selectionFixture, selectionArgs, passed: 8)
+    null
+  }
+
+  """
+  A single selected test runs alone: every other test of its project fails
+  if it runs.
+  """
+  selectedSingleTestCheck(ws: Workspace!): Void @check {
+    let fixture = selectionFixture.withNewFile(
+      "p1/a.test.js",
+      "import { test } from 'vitest'\ntest('foo', () => {})\ntest('bar', () => { throw new Error('excluded test ran') })\n",
+    )
+    selectedCheck(
+      ws,
+      fixture,
+      ["--vitest-project=p1", "--vitest-test-file=a.test.js", "--vitest-test=foo"],
+      passed: 1,
+      messages: ["vitest-project=p1&vitest-test-file=a.test.js&vitest-test=foo"],
+    )
+    null
+  }
+
+  """
+  A failing named test fails its own check only.
+  """
+  selectedFailureCheck(ws: Workspace!): Void @check {
+    let fixture = selectionFixture.withNewFile(
+      "p1/a.test.js",
+      "import { test } from 'vitest'\ntest('foo', () => { throw new Error('selected failure') })\ntest('bar', () => {})\n",
+    )
+    selectedCheck(
+      ws,
+      fixture,
+      selectionArgs,
+      passed: 7,
+      failed: 1,
+      # The report shows the failing check and its test's diagnostics, and
+      # may leave out the check's own message when its test span failed.
+      messages: ["vitest-project=p1&vitest-test-file=a.test.js&vitest-test=foo", "selected failure"],
+    )
+    null
+  }
+
+  """
+  A file that does not load fails every selected check in it, naming the
+  file's error, and nothing else: discovery only reads it.
+  """
+  selectedCollectionErrorCheck(ws: Workspace!): Void @check {
+    let fixture = selectionFixture.withNewFile(
+      "p1/a.test.js",
+      "import { test } from 'vitest'\nthrow new Error('broken at collection')\ntest('foo', () => {})\ntest('bar', () => {})\n",
+    )
+    selectedCheck(
+      ws,
+      fixture,
+      selectionArgs,
+      passed: 6,
+      failed: 2,
+      messages: ["Vitest project p1, a.test.js: test file failed outside a selected test check", "broken at collection"],
+    )
+    null
+  }
+
+  """
+  A file that fails outside its tests, here in afterAll, fails each of its
+  selected checks, and only those.
+  """
+  selectedTeardownCheck(ws: Workspace!): Void @check {
+    let fixture = selectionFixture.withNewFile(
+      "p1/a.test.js",
+      "import { afterAll, test } from 'vitest'\nafterAll(() => { throw new Error('teardown failure') })\ntest('foo', () => {})\ntest('bar', () => {})\n",
+    )
+    selectedCheck(
+      ws,
+      fixture,
+      selectionArgs,
+      passed: 6,
+      failed: 2,
+      messages: ["Vitest project p1, a.test.js: test file failed outside a selected test check", "teardown failure"],
+    )
+    null
+  }
+
+  """
+  A project whose build step fails fails every selected check in it, and
+  only those.
+  """
+  selectedBuildFailureCheck(ws: Workspace!): Void @check {
+    let manifest = "{\"name\":\"n\",\"type\":\"module\",\"scripts\":{\"build\":\"BUILD\"},\"devDependencies\":{\"vitest\":\"^4.1.11\"}}\n"
+    let fixture = selectionFixture
+      .withNewFile("p1/package.json", manifest.replaceMatches(`BUILD`, with: "true"))
+      .withNewFile("p2/package.json", manifest.replaceMatches(`BUILD`, with: "echo build broke && exit 3"))
+    selectedCheck(
+      ws,
+      fixture,
+      selectionArgs,
+      passed: 4,
+      failed: 4,
+      messages: ["Vitest project p2: build failed (exit 3)", "build broke"],
+      settings: "build = true",
+    )
+    null
+  }
+
+  """
+  p2 cannot be installed: its manifest names a package that does not exist,
+  and its lockfile is gone. p1's config throws when Vitest loads it.
+  """
+  let brokenSetupFixture: Directory! {
+    selectionFixture
+      .withNewFile(
+        "p2/package.json",
+        "{\"name\":\"n\",\"type\":\"module\",\"devDependencies\":{\"vitest\":\"^4.1.11\",\"dagger-vitest-no-such-package\":\"0.0.0\"}}\n",
+      )
+      .withoutFile("p2/package-lock.json")
+      .withNewFile("p1/vitest.config.mjs", "throw new Error('config broke')\n")
+  }
+
+  """
+  Listing runs no tool: a project that cannot be installed and one whose
+  config cannot be loaded both list every test of every file.
+  """
+  selectedListCheck(ws: Workspace!): Void @check {
+    let listed = cli(ws, brokenSetupFixture, ["--progress=report", "check", "-l", "--all", "--generated=false"], "")
+    let output = listed.stdout + listed.stderr
+    assert(listed.exitCode == 0, "listing failed:\n" + output)
+    ["p1", "p2"].map { p =>
+      ["a.test.js", "b.test.js", "unused.test.js"].map { f =>
+        ["foo", "bar", "other"].map { t =>
+          assert(
+            output.split("\n").any { line =>
+              line.split(" ").filter { word => word != "" }.takeFirst(4) == ["vitest", p, f, t]
+            },
+            "missing " + p + " " + f + " " + t + ":\n" + output,
+          )
+        }
+      }
+    }
+    null
+  }
+
+  """
+  A project that cannot be installed fails its own checks, naming the step,
+  and a project whose config does not load fails its own; neither breaks
+  discovery.
+  """
+  selectedSetupFailureCheck(ws: Workspace!): Void @check {
+    selectedCheck(
+      ws,
+      brokenSetupFixture,
+      selectionArgs,
+      passed: 0,
+      failed: 8,
+      messages: ["Vitest project p2: install failed (npm install", "config broke"],
+    )
+    selectedCheck(
+      ws,
+      brokenSetupFixture.withNewFile("p1/vitest.config.mjs", "export default {}\n"),
+      selectionArgs,
+      passed: 4,
+      failed: 4,
+      messages: ["Vitest project p2: install failed (npm install"],
+    )
+    null
+  }
+
+  """
+  Every check of a project shares one vitest run, and each project has its
+  own: a.test.js reports a random number from afterAll, which fails both of
+  its checks in each project with the same number, one number per project.
+  """
+  selectedSharedRunCheck(ws: Workspace!): Void @check {
+    let fixture = ["p1", "p2"].reduce(selectionFixture) { dir, p =>
+      dir.withNewFile(
+        p + "/a.test.js",
+        "import { afterAll, test } from 'vitest'\nafterAll(() => { throw new Error('shared run ' + Math.random()) })\ntest('foo', () => {})\ntest('bar', () => {})\n",
+      )
+    }
+    let output = selectedCheck(ws, fixture, selectionArgs, passed: 4, failed: 4, messages: ["shared run 0."])
+    let runs = output.matchAll(`shared run (0\.[0-9]+)`).map { m => m.captures.join("") }.uniq
+    assert(runs.length == 2, "want one vitest run per project, got " + `${runs.length}` + ": " + runs.join(", ") + "\n" + output)
+    null
+  }
+
+  """
+  One project, r, with two passing test files and the given config:
+
+      ok.test.js          ok
+      visible.test.js     visible
+  """
+  let reportingFixture(config: String!): Directory! {
+    directory.withDirectory(
+      "r",
+      npmProject
+        .withNewFile("ok.test.js", "import { test } from 'vitest'\ntest('ok', () => {})\n")
+        .withNewFile("visible.test.js", "import { test } from 'vitest'\ntest('visible', () => {})\n")
+        .withNewFile("vitest.config.mjs", config),
+    )
+  }
+
+  """
+  With nothing selected out the project runs as a whole, and a failure in a
+  file no check covers (one the config's include adds in a form discovery
+  does not read) fails every check of the run.
+  """
+  selectedUncheckedFailureCheck(ws: Workspace!): Void @check {
+    let fixture = reportingFixture("export default { test: { include: ['**/*.test.js', 'checks/**/*.js'] } }\n")
+      .withNewFile("r/checks/broken.js", "import { test } from 'vitest'\ntest('hidden', () => { throw new Error('unchecked failure') })\n")
+    selectedCheck(
+      ws,
+      fixture,
+      ["--vitest-project=r"],
+      passed: 0,
+      failed: 2,
+      messages: ["failures in test files without selected test checks: checks/broken.js", "unchecked failure"],
+    )
+    null
+  }
+
+  """
+  An error Vitest reports outside any test file, such as an unhandled
+  error, fails every check of the run.
+  """
+  selectedUnhandledErrorCheck(ws: Workspace!): Void @check {
+    let fixture = reportingFixture("export default {}\n").withNewFile(
+      "r/leak.test.js",
+      "import { test } from 'vitest'\ntest('leaks', () => { setTimeout(() => { throw new Error('unhandled boom') }, 0) })\ntest('waits', async () => { await new Promise((r) => setTimeout(r, 50)) })\n",
+    )
+    selectedCheck(
+      ws,
+      fixture,
+      ["--vitest-project=r"],
+      passed: 0,
+      failed: 4,
+      messages: ["shared vitest command failed (exit 1)", "unhandled boom"],
+    )
+    null
+  }
+
+  """
+  A named test the run does not run fails as not run rather than passing:
+  one after an early return in its suite, which the source names but Vitest
+  never registers, and one in a file the config excludes in a form
+  discovery does not read.
+  """
+  selectedNotRunCheck(ws: Workspace!): Void @check {
+    let fixture = reportingFixture("export default { test: { exclude: ['**/node_modules/**', 'ignored.test.js'] } }\n")
+      .withNewFile("r/ghost.test.js", "import { describe, test } from 'vitest'\ndescribe('d', () => {\n  test('runs', () => {})\n  return\n  test('ghost', () => {})\n})\n")
+      .withNewFile("r/ignored.test.js", "import { test } from 'vitest'\ntest('ignored', () => {})\n")
+    selectedCheck(
+      ws,
+      fixture,
+      ["--vitest-project=r"],
+      passed: 3,
+      failed: 2,
+      messages: ["d > ghost did not run: vitest ran ghost.test.js without it", "ignored did not run: vitest did not run ignored.test.js"],
+    )
+    selectedCheck(
+      ws,
+      fixture,
+      ["--vitest-test=d > ghost"],
+      passed: 0,
+      failed: 1,
+      messages: ["d > ghost did not run"],
+    )
+    null
+  }
+
+  """
+  A failing .each row lands on its file's "*" check; when "*" is not
+  selected but such a test still runs (its row's name matches a selected
+  name), it fails every selected check of its file instead.
+  """
+  selectedEachCheck(ws: Workspace!): Void @check {
+    let fixture = reportingFixture("export default {}\n")
+      .withNewFile("r/each.test.js", "import { test } from 'vitest'\ntest('plain', () => {})\ntest.each([1, 2])('row %i', (n) => { if (n === 2) throw new Error('each failure') })\n")
+      .withNewFile("r/twin.test.js", "import { test } from 'vitest'\ntest('twin', () => {})\ntest.each(['ok'])('%s', () => { throw new Error('twin failure') })\n")
+    selectedCheck(
+      ws,
+      fixture,
+      ["--vitest-project=r"],
+      passed: 4,
+      failed: 2,
+      messages: ["each failure", "twin failure"],
+    )
+    # Only ok and twin are selected; twin.test.js's row is named ok at
+    # runtime, so it runs, and its file's selected check takes the failure.
+    selectedCheck(
+      ws,
+      fixture,
+      ["--vitest-test=ok", "--vitest-test=twin"],
+      passed: 1,
+      failed: 1,
+      messages: ["vitest-test-file=twin.test.js&vitest-test=twin"],
+    )
+    null
+  }
+
+  """
+  A test a helper function declares is not keyed by the literal it is
+  written with: it falls under "*", which takes its failure.
+  """
+  selectedHelperCheck(ws: Workspace!): Void @check {
+    let fixture = reportingFixture("export default {}\n").withNewFile(
+      "r/helper.test.js",
+      "import { test } from 'vitest'\ntest('top', () => {})\nfunction fixed() { test('literal in helper', () => { throw new Error('helper ran') }) }\nfixed()\n",
+    )
+    let listed = cli(ws, fixture, ["--progress=report", "check", "-l", "--all", "--generated=false"], "")
+    let output = listed.stdout + listed.stderr
+    assert(output.contains("literal in helper") == false, "the helper's test was keyed:\n" + output)
+    selectedCheck(
+      ws,
+      fixture,
+      ["--vitest-project=r"],
+      passed: 3,
+      failed: 1,
+      messages: ["helper ran"],
+    )
+    null
+  }
+
+  """
+  A test declared under a condition registers only when it holds, so it is
+  not named: it falls under "*", which passes with no such test observed,
+  rather than failing as not run.
+  """
+  selectedConditionalCheck(ws: Workspace!): Void @check {
+    let fixture = reportingFixture("export default {}\n").withNewFile(
+      "r/cond.test.js",
+      "import { test } from 'vitest'\ntest('plain', () => {})\nif (process.env.DAGGER_VITEST_NEVER) { test('in a branch', () => {}) }\nprocess.env.DAGGER_VITEST_NEVER ? test('ternary', () => {}) : null\n",
+    )
+    selectedCheck(ws, fixture, ["--vitest-project=r"], passed: 4)
+    null
+  }
+
+  """
+  A named test Vitest skips (another test's .only, or skipIf) was observed,
+  so its check passes rather than failing as not run.
+  """
+  selectedSkippedCheck(ws: Workspace!): Void @check {
+    let fixture = reportingFixture("export default { test: { allowOnly: true } }\n").withNewFile(
+      "r/only.test.js",
+      "import { test } from 'vitest'\ntest.only('focus', () => {})\ntest('unfocused', () => { throw new Error('unfocused ran') })\ntest.skipIf(true)('skipped by condition', () => { throw new Error('condition ran') })\n",
+    )
+    selectedCheck(ws, fixture, ["--vitest-project=r"], passed: 5)
+    selectedCheck(ws, fixture, ["--vitest-test=unfocused", "--vitest-test=skipped by condition"], passed: 2)
+    null
+  }
+
+  """
+  Nested suites join their names with " > ", rejoined with spaces for
+  --testNamePattern, and a name holding regexp characters selects only
+  itself.
+  """
+  selectedNestedCheck(ws: Workspace!): Void @check {
+    let fixture = reportingFixture("export default {}\n").withNewFile(
+      "r/nested.test.js",
+      "import { describe, test } from 'vitest'\ndescribe('outer', () => {\n  describe('inner (1+1)', () => {\n    test('adds', () => {})\n    test('adds more', () => { throw new Error('excluded test ran') })\n  })\n})\n",
+    )
+    selectedCheck(ws, fixture, ["--vitest-test=outer > inner (1+1) > adds"], passed: 1)
+    null
+  }
+
+  """
+  hello-dagger's Vitest 1.6 works the same: names come from the source,
+  in a whole run and a filtered one.
+  """
+  selectedOldVitestCheck(ws: Workspace!): Void @check {
+    selectedCheck(
+      ws,
+      project.withNewFile("src/broken.test.ts", failingTest),
+      [],
+      passed: 1,
+      failed: 1,
+      messages: ["vitest-test-file=src/broken.test.ts&vitest-test=fails"],
+    )
+    # Vitest 1 matches the name pattern against the name with a leading space.
+    selectedCheck(
+      ws,
+      project.withNewFile("src/broken.test.ts", failingTest),
+      ["--vitest-test=HelloWorld > renders properly"],
+      passed: 1,
+    )
     null
   }
 }

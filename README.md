@@ -6,7 +6,7 @@ Vitest reporter with OpenTelemetry support for auto-instrumentation with Dagger.
 
 ### With Dagger
 
-Requires Dagger v1.0.0-beta.15 or later.
+Requires Dagger v1.0.0-beta.22 or later.
 
 ```bash
 dagger install github.com/dagger/vitest
@@ -18,12 +18,11 @@ dagger check
 #### Checks and selection
 
 Projects, their test files and each file's tests are collections. `dagger
-check` lists one check per test file, addressed as
-`vitest/projects/test-files/tests/test`, and runs each file in its own
-`vitest` invocation:
+check` lists one check per test, addressed as
+`vitest/projects/test-files/tests/test`:
 
 ```bash
-# list what would run, one line per test file
+# list what would run, one line per test (runs no container)
 dagger check -l --all
 
 # every project's tests
@@ -36,8 +35,7 @@ dagger check --check test
 dagger check --vitest-project=apps/web
 
 # some test files of one project
-dagger check vitest/projects/test-files/tests/test \
-  --vitest-project=apps/web \
+dagger check --vitest-project=apps/web \
   --vitest-test-file=src/a.test.ts --vitest-test-file=src/b.test.ts
 
 # a single test, by the full name `vitest list` prints after the file path
@@ -57,29 +55,98 @@ dagger list vitest-tests -a --vitest-test-file=src/a.test.ts
 | `--vitest-projects` | every project |
 | `--vitest-test-file=PATH` | a test file, by project-relative path (repeatable) |
 | `--vitest-test-files` | every test file |
-| `--vitest-test=NAME` | a test, by full name (repeatable) |
+| `--vitest-test=NAME` | a test, by full name, or `*` (repeatable) |
 | `--vitest-tests` | every test |
 
 The key flags are named after the item types, `VitestProject`,
 `VitestTestFile` and `VitestTest`; `dagger check --help` lists the flags in
-effect.
+effect. A test-file path or a test name selects it in every project or file
+that has it; `--vitest-project` and `--vitest-test-file` narrow that.
 
-When none of a file's tests is selected out, the whole file runs, so tests the
-listing did not report still run. Otherwise only the selected tests run,
-through Vitest's `--testNamePattern`: their full names are escaped and
-anchored, so a name holding regexp characters matches only itself.
+#### Test names, and `*`
 
-Test files are passed to Vitest by path, and because Vitest matches file
-arguments as substrings (so `src/a.test.ts` would also run `src/a.test.tsx` or
-`lib/src/a.test.ts`), every other discovered test file with the same file name
-is removed from the container first. This holds whatever `include`/`exclude`
-the Vitest config or its inline projects set.
+Listing never runs Vitest, so a file's tests are read from its source. A
+test is keyed by its full name as `vitest list` prints it: the names of its
+enclosing `describe`/`suite` calls and its own, joined by ` > `
+(`describe('the sum', () => { it('adds two numbers') })` is
+`the sum > adds two numbers`). A test gets a key of its own only when its name
+is a string literal and every scope around it is the file's top level, the
+callback of a named suite, or a plain `{}` block in one of those. `it`, `test`, `.only`, `.concurrent`,
+`.sequential`, `.shuffle`, `.fails`, `.skipIf(...)` and `.runIf(...)` are
+read; `.skip` and `.todo` tests are not keys.
 
-A project's test files can also be run together, in one `vitest` invocation,
-through `testFiles(ws)` — see [below](#using-it-from-another-module). With
-nothing selected out that is a plain `vitest`, so Vitest's own config decides
-what runs; `dagger check` does not take that path, so a test file that only
-the config's `include` adds is not checked.
+Some tests are named only at runtime, and get no key of their own:
+
+- `.each` and `.for` rows;
+- tests made by a `test.extend` fixture;
+- tests whose name is not a literal;
+- tests declared in a helper function or another callback, or under a
+  condition: `if`/`else`, a loop, `try`/`catch`, `switch`, a ternary or a
+  `&&`/`||` expression (whether they register at all depends on the run);
+- every test under a suite that is not named.
+
+A file with any such test gets one more key, `*`, standing for exactly the
+file's tests its source does not name. A file whose source names no test has
+only `*`. `*` is a check like any other: it fails when any of those tests
+fails, and passes when none does (or none ran).
+
+#### One run per project
+
+Each selected test has its own check, but all the checks of a project share
+one `vitest` run: every check hands the same selection to the same helper,
+which builds a byte-identical command, so the engine runs it once. Separate
+projects have separate runs, with their own install and container.
+
+- With nothing selected out of a project (no test file and no test removed
+  by the selection), the run is a plain `vitest`, so the project's own config
+  decides what runs, as on the command line.
+- Otherwise the selected test files are passed by path, and when tests are
+  selected out too, one anchored `--testNamePattern` matches the selected
+  names, their parts escaped and joined by spaces as Vitest joins them (so a
+  name holding regexp characters matches only itself).
+  A selected `*` adds a negative lookahead matching every name that is not
+  one of its file's static names. Test files with no selected test are left
+  out. Vitest matches file arguments as substrings (so `src/a.test.ts` would
+  also run `src/a.test.tsx` or `lib/src/a.test.ts`), so every other
+  discovered test file with the same file name is removed from the container
+  first. This holds whatever `include`/`exclude` the Vitest config or its
+  inline projects set.
+
+The run writes Vitest's JSON report (`--reporter=json`, next to
+`--reporter=default` unless `flags` names reporters of its own), and one
+indexing step, in a pinned image, reads it once and writes a bounded result
+per check; each check reads only its own. How results are attributed:
+
+- A selected named test that fails fails its own check only.
+- A test the source does not name that fails fails its file's `*` check
+  when that is selected, and otherwise every selected check of its file.
+- A file that fails outside its tests (it does not load, or a hook such as
+  `afterAll` throws) fails every selected check in that file.
+- A failure in a test file without selected checks (possible when the whole
+  project runs: a file the config adds in a form discovery does not read,
+  say), an error Vitest reports outside any test file (an unhandled error, a
+  config that does not load), or no report at all, fails every check of the
+  run.
+- A failed install or build step fails every check of that project, naming
+  the step. Other projects are unaffected.
+- A selected named test the report does not show at all fails as not run
+  rather than passing: Vitest left it out of the file (its source names it
+  but it never registers, say after an early `return`), or never ran its
+  file. A test the report shows in any state was observed: one Vitest skips
+  (another test's `.only`, `skipIf`, `runIf`, `ctx.skip()`) passes. With
+  `--bail` in `flags`, tests that never started after a reported failure
+  are not blamed for it.
+
+Messages keep the last 32 KiB of each diagnostic and mark what they cut.
+Logs and test spans belong to the check that starts the shared run; the
+other checks share its result. A run is cached like any other container
+operation: running unchanged tests again reuses the previous result.
+
+The collections also have plain functions, which are not checks:
+`VitestProjects.test(ws)` runs every project, `VitestTestFiles.test(ws)` a
+project's selected files in one `vitest` invocation, `VitestTests.test(ws)`
+a file's selected tests, and `VitestTestFile.test(ws)` one file. There is no
+`.batch` namespace.
 
 If the Vitest config defines projects you don't want to run in a container,
 such as browser or e2e projects, name the ones to run with Vitest's `--project`
@@ -120,33 +187,25 @@ files unless the outer config excludes them.
 Test files are keyed by their path relative to the project root. They are
 found by one ripgrep search per project with Vitest's default `include`,
 `**/*.{test,spec}.?(c|m)[jt]s?(x)`, pruning `node_modules`, `.git` and the
-subtrees of nested projects. Listing test files runs no container. Static
-discovery does not read your Vitest config, so:
+subtrees of nested projects, and their tests are read from each file (see
+above). Listing runs no container: no install, no Vitest. A Vitest config is
+code, so it is not evaluated; only the common form that extends Vitest's
+defaults is read from the project's own config file, for the string
+literals it lists:
 
-- A custom `include` or `exclude` in the config is not seen. Files your config
-  adds still run whenever the whole project runs (no test file selected out),
-  but cannot be selected on their own; files your config excludes are listed
-  and, when selected alone, make Vitest report that it found no test files.
-- A project where no file matches the default pattern has no test files to
-  check, so `dagger check` does not run it. Call the project's `test` function
-  from the API to run it.
+```ts
+include: [...configDefaults.include, 'checks/**/*.ts'],   // adds these files
+exclude: [...configDefaults.exclude, 'e2e/**'],           // leaves these out
+```
+
+- Any other `include` or `exclude` is not seen. Files it adds still run
+  whenever the whole project runs, and a failure in them fails every check
+  of the run, but they have no checks of their own; a file it excludes still
+  gets checks, which fail saying Vitest did not run it.
+- A project where no file matches has no test files to check, so `dagger
+  check` does not run it. Call the project's `test` function from the API
+  to run it.
 - Empty files are not listed.
-
-Tests are keyed by the full name `vitest list` prints after the file path,
-suites included, e.g. `the sum > adds two numbers`. Unlike test files these
-come from Vitest itself — one `vitest list <file>` run per file, which needs
-the project installed — because names can be computed and `test.each`
-generates them. Nothing lists them until you ask: `dagger check` with no test
-selected never runs `vitest list`. A config defining Vitest `projects` lists
-each file once per project that includes it, under one set of keys.
-
-`test.skip` and `test.todo` are left out of `vitest list`, so they are not
-keys and cannot be selected on their own. They are reported as skipped when
-their file runs.
-
-`vitest list` arrives in Vitest 2.1. On an older Vitest it is read as a file
-filter, so a project has no tests to select and `list(ws)` reports nothing;
-select test files instead.
 
 #### Installing dependencies
 
@@ -222,10 +281,13 @@ includeExtraFiles = []
 #### Using it from another module
 
 `projects(ws)` returns the project collection. Collections expose `keys`,
-`get(key:)`, `subset(keys:)` and `batch`; each project's `testFiles(ws)` is
-the test-file collection, and each test file's `tests(ws)` is its test
-collection. A check called through a dependency comes back as a `Check` that
-has not run yet, so wrap it:
+`get(key:)` and `subset(keys:)`; each project's `testFiles(ws)` is the
+test-file collection, and each test file's `tests` is its test collection.
+The collection-level `test` functions and `VitestTestFile.test(ws)` are
+plain functions. A test's own `test` is the check: it takes the project's
+test-file collection as `selection` (`dagger check` fills it in, filtered),
+and a check called through a dependency comes back as a `Check` that has
+not run yet, so wrap it:
 
 ```dang
 let run(check: Check!): Void {
@@ -237,20 +299,24 @@ let run(check: Check!): Void {
 
 testWeb(ws: Workspace!): Void @check {
   let projects = vitest.projects(ws)
-  # every project, as a plain function
-  projects.batch.test(ws)
+  # every project
+  projects.test(ws)
   # one project's selected test files, in one vitest invocation
   let files = projects.get(key: "apps/web").testFiles(ws)
-  files.subset(keys: ["src/a.test.ts"]).batch.test(ws)
+  files.subset(keys: ["src/a.test.ts"]).test(ws)
   # a single test file
   let file = files.get(key: "src/a.test.ts")
   file.test(ws)
-  # selected tests of that file, and a single test -- these are checks
-  let tests = file.tests(ws)
-  run(tests.subset(keys: ["the sum > adds two numbers"]).batch.test(ws))
-  run(tests.get(key: "the sum > adds two numbers").test(ws))
+  # selected tests of that file
+  file.tests.subset(keys: ["the sum > adds two numbers"]).test(ws)
+  # a single test's check, sharing one run of the files it is handed
+  run(file.tests.get(key: "the sum > adds two numbers").test(ws, selection: files.subset(keys: ["src/a.test.ts"])))
 }
 ```
+
+Called directly like this, a test check sees no selection: it runs the
+files in `selection` with every one of their tests, by name, and reports
+its own result.
 
 `vitest.project(ws, path)` looks a project up by its root, relative to the
 workspace cwd. A project also has `list(ws)` (`vitest list` output, failing
