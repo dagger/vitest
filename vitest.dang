@@ -390,13 +390,10 @@ type Vitest {
   binary and git hooks are switched off.
   """
   let nodeBase(pm: String!): Container! {
-    let base = container
+    let common = container
       .from(baseImageAddress)
       .withMountedCache("/root/.npm", cacheVolume("npm-cache"))
       .withEnvVariable("npm_config_cache", "/root/.npm")
-      # Concurrent yarn 1 installs corrupt a shared cache.
-      .withMountedCache("/root/.yarn-cache", cacheVolume("yarn-cache"), sharing: CacheSharingMode.LOCKED)
-      .withEnvVariable("YARN_CACHE_FOLDER", "/root/.yarn-cache")
       .withMountedCache("/root/.bun-cache", cacheVolume("bun-cache"))
       .withEnvVariable("BUN_INSTALL_CACHE_DIR", "/root/.bun-cache")
       .withMountedCache("/root/.corepack", cacheVolume("corepack"))
@@ -410,6 +407,16 @@ type Vitest {
       .withEnvVariable("CYPRESS_INSTALL_BINARY", "0")
       .withEnvVariable("HUSKY", "0")
       .withEnvVariable("SKIP_INSTALL_SIMPLE_GIT_HOOKS", "1")
+    # Concurrent yarn 1 installs corrupt a shared cache, so one at a time.
+    # A LOCKED mount serializes every exec that carries it engine-wide, so
+    # only yarn projects get it.
+    let base = if (pm == "yarn") {
+      common
+        .withMountedCache("/root/.yarn-cache", cacheVolume("yarn-cache"), sharing: CacheSharingMode.LOCKED)
+        .withEnvVariable("YARN_CACHE_FOLDER", "/root/.yarn-cache")
+    } else {
+      common
+    }
     let ctr = if (pm == "pnpm" or pm == "yarn") {
       # Images from node 25 on no longer ship corepack, and --force replaces
       # the yarn they still ship.
